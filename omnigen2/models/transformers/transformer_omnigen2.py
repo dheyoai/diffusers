@@ -1,18 +1,3 @@
-
-# Copyright 2024 Alpha-VLLM Authors and The HuggingFace Team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import warnings
 import itertools
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -35,17 +20,37 @@ from .repo import OmniGen2RotaryPosEmbed
 from .block_lumina2 import LuminaLayerNormContinuous, LuminaRMSNormZero, LuminaFeedForward, Lumina2CombinedTimestepCaptionEmbedding
 
 try:
-    # from apex.normalization import FusedRMSNorm
     from ...ops.triton.layer_norm import RMSNorm as FusedRMSNorm
     FUSEDRMSNORM_AVALIBLE = True
 except ImportError:
     FUSEDRMSNORM_AVALIBLE = False
-    warnings.warn("Cannot import apex RMSNorm, switch to vanilla implementation")
+    warnings.warn("Cannot import FusedRMSNorm, falling back to vanilla implementation")
 
-logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+logger = logging.get_logger(__name__)
 
 
 class OmniGen2TransformerBlock(nn.Module):
+    """
+    Transformer block for OmniGen2 model.
+    
+    This block implements a transformer layer with:
+    - Multi-head attention with flash attention
+    - Feed-forward network with SwiGLU activation
+    - RMS normalization
+    - Optional modulation for conditional generation
+    
+    Args:
+        dim: Dimension of the input and output tensors
+        num_attention_heads: Number of attention heads
+        num_kv_heads: Number of key-value heads
+        multiple_of: Multiple of which the hidden dimension should be
+        ffn_dim_multiplier: Multiplier for the feed-forward network dimension
+        norm_eps: Epsilon value for normalization layers
+        modulation: Whether to use modulation for conditional generation
+        use_fused_rms_norm: Whether to use fused RMS normalization
+        use_fused_swiglu: Whether to use fused SwiGLU activation
+    """
+
     def __init__(
         self,
         dim: int,
@@ -56,13 +61,14 @@ class OmniGen2TransformerBlock(nn.Module):
         norm_eps: float,
         modulation: bool = True,
         use_fused_rms_norm: bool = True,
-        use_fused_swiglu: bool = True
-
+        use_fused_swiglu: bool = True,
     ) -> None:
+        """Initialize the transformer block."""
         super().__init__()
         self.head_dim = dim // num_attention_heads
         self.modulation = modulation
 
+        # Initialize attention layer
         self.attn = Attention(
             query_dim=dim,
             cross_attention_dim=None,
@@ -76,14 +82,16 @@ class OmniGen2TransformerBlock(nn.Module):
             processor=OmniGen2AttnProcessorFlash2Varlen(),
         )
 
+        # Initialize feed-forward network
         self.feed_forward = LuminaFeedForward(
             dim=dim,
             inner_dim=4 * dim,
             multiple_of=multiple_of,
             ffn_dim_multiplier=ffn_dim_multiplier,
-            use_fused_swiglu=use_fused_swiglu
+            use_fused_swiglu=use_fused_swiglu,
         )
 
+        # Initialize normalization layers
         if modulation:
             self.norm1 = LuminaRMSNormZero(
                 embedding_dim=dim,
@@ -93,13 +101,15 @@ class OmniGen2TransformerBlock(nn.Module):
             )
         else:
             if use_fused_rms_norm:
-                assert FUSEDRMSNORM_AVALIBLE
+                if not FUSEDRMSNORM_AVALIBLE:
+                    raise ImportError("FusedRMSNorm is not available")
                 self.norm1 = FusedRMSNorm(dim, eps=norm_eps)
             else:
                 self.norm1 = nn.RMSNorm(dim, eps=norm_eps)
 
         if use_fused_rms_norm:
-            assert FUSEDRMSNORM_AVALIBLE
+            if not FUSEDRMSNORM_AVALIBLE:
+                raise ImportError("FusedRMSNorm is not available")
             self.ffn_norm1 = FusedRMSNorm(dim, eps=norm_eps)
             self.norm2 = FusedRMSNorm(dim, eps=norm_eps)
             self.ffn_norm2 = FusedRMSNorm(dim, eps=norm_eps)
@@ -110,7 +120,12 @@ class OmniGen2TransformerBlock(nn.Module):
 
         self.initialize_weights()
 
-    def initialize_weights(self):
+    def initialize_weights(self) -> None:
+        """
+        Initialize the weights of the transformer block.
+        
+        Uses Xavier uniform initialization for linear layers and zero initialization for biases.
+        """
         nn.init.xavier_uniform_(self.attn.to_q.weight)
         nn.init.xavier_uniform_(self.attn.to_k.weight)
         nn.init.xavier_uniform_(self.attn.to_v.weight)
@@ -131,8 +146,22 @@ class OmniGen2TransformerBlock(nn.Module):
         image_rotary_emb: torch.Tensor,
         temb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """
+        Forward pass of the transformer block.
 
+        Args:
+            hidden_states: Input hidden states tensor
+            attention_mask: Attention mask tensor
+            image_rotary_emb: Rotary embeddings for image tokens
+            temb: Optional timestep embedding tensor
+
+        Returns:
+            torch.Tensor: Output hidden states after transformer block processing
+        """
         if self.modulation:
+            if temb is None:
+                raise ValueError("temb must be provided when modulation is enabled")
+                
             norm_hidden_states, gate_msa, scale_mlp, gate_mlp = self.norm1(hidden_states, temb)
             attn_output = self.attn(
                 hidden_states=norm_hidden_states,
@@ -159,39 +188,33 @@ class OmniGen2TransformerBlock(nn.Module):
 
 
 class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin):
-    r"""
-    Omnigen2NextDiT: Diffusion model with a Transformer backbone.
-
-    Parameters:
-        sample_size (`int`): The width of the latent images. This is fixed during training since
-            it is used to learn a number of position embeddings.
-        patch_size (`int`, *optional*, (`int`, *optional*, defaults to 2):
-            The size of each patch in the image. This parameter defines the resolution of patches fed into the model.
-        in_channels (`int`, *optional*, defaults to 4):
-            The number of input channels for the model. Typically, this matches the number of channels in the input
-            images.
-        hidden_size (`int`, *optional*, defaults to 4096):
-            The dimensionality of the hidden layers in the model. This parameter determines the width of the model's
-            hidden representations.
-        num_layers (`int`, *optional*, default to 32):
-            The number of layers in the model. This defines the depth of the neural network.
-        num_attention_heads (`int`, *optional*, defaults to 32):
-            The number of attention heads in each attention layer. This parameter specifies how many separate attention
-            mechanisms are used.
-        num_kv_heads (`int`, *optional*, defaults to 8):
-            The number of key-value heads in the attention mechanism, if different from the number of attention heads.
-            If None, it defaults to num_attention_heads.
-        multiple_of (`int`, *optional*, defaults to 256):
-            A factor that the hidden size should be a multiple of. This can help optimize certain hardware
-            configurations.
-        ffn_dim_multiplier (`float`, *optional*):
-            A multiplier for the dimensionality of the feed-forward network. If None, it uses a default value based on
-            the model configuration.
-        norm_eps (`float`, *optional*, defaults to 1e-5):
-            A small value added to the denominator for numerical stability in normalization layers.
-        scaling_factor (`float`, *optional*, defaults to 1.0):
-            A scaling factor applied to certain parameters or layers in the model. This can be used for adjusting the
-            overall scale of the model's operations.
+    """
+    OmniGen2 Transformer 2D Model.
+    
+    A transformer-based diffusion model for image generation with:
+    - Patch-based image processing
+    - Rotary position embeddings
+    - Multi-head attention
+    - Conditional generation support
+    
+    Args:
+        patch_size: Size of image patches
+        in_channels: Number of input channels
+        out_channels: Number of output channels (defaults to in_channels)
+        hidden_size: Size of hidden layers
+        num_layers: Number of transformer layers
+        num_refiner_layers: Number of refiner layers
+        num_attention_heads: Number of attention heads
+        num_kv_heads: Number of key-value heads
+        multiple_of: Multiple of which the hidden dimension should be
+        ffn_dim_multiplier: Multiplier for feed-forward network dimension
+        norm_eps: Epsilon value for normalization layers
+        axes_dim_rope: Dimensions for rotary position embeddings
+        axes_lens: Lengths for rotary position embeddings
+        text_feat_dim: Dimension of text features
+        timestep_scale: Scale factor for timestep embeddings
+        use_fused_rms_norm: Whether to use fused RMS normalization
+        use_fused_swiglu: Whether to use fused SwiGLU activation
     """
 
     _supports_gradient_checkpointing = True
@@ -219,60 +242,74 @@ class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
         use_fused_rms_norm: bool = True,
         use_fused_swiglu: bool = True,
     ) -> None:
+        """Initialize the OmniGen2 transformer model."""
         super().__init__()
 
-        assert (hidden_size // num_attention_heads) == sum(axes_dim_rope)
+        # Validate configuration
+        if (hidden_size // num_attention_heads) != sum(axes_dim_rope):
+            raise ValueError(
+                f"hidden_size // num_attention_heads ({hidden_size // num_attention_heads}) "
+                f"must equal sum(axes_dim_rope) ({sum(axes_dim_rope)})"
+            )
         
         self.out_channels = out_channels or in_channels
 
-        # 1. Positional, patch & conditional embeddings
+        # Initialize embeddings
         self.rope_embedder = OmniGen2RotaryPosEmbed(
-            theta=10000, axes_dim=axes_dim_rope, axes_lens=axes_lens, patch_size=patch_size
+            theta=10000,
+            axes_dim=axes_dim_rope,
+            axes_lens=axes_lens,
+            patch_size=patch_size,
         )
 
-        self.x_embedder = nn.Linear(in_features=patch_size * patch_size * in_channels, out_features=hidden_size)
+        self.x_embedder = nn.Linear(
+            in_features=patch_size * patch_size * in_channels,
+            out_features=hidden_size,
+        )
 
-        self.ref_image_patch_embedder = nn.Linear(in_features=patch_size * patch_size * in_channels, out_features=hidden_size)
+        self.ref_image_patch_embedder = nn.Linear(
+            in_features=patch_size * patch_size * in_channels,
+            out_features=hidden_size,
+        )
 
         self.time_caption_embed = Lumina2CombinedTimestepCaptionEmbedding(
-            hidden_size=hidden_size, text_feat_dim=text_feat_dim, norm_eps=norm_eps, timestep_scale=timestep_scale,
-            use_fused_rms_norm=use_fused_rms_norm
+            hidden_size=hidden_size,
+            text_feat_dim=text_feat_dim,
+            norm_eps=norm_eps,
+            timestep_scale=timestep_scale,
+            use_fused_rms_norm=use_fused_rms_norm,
         )
 
-        # 2. Noise and context refinement blocks
-        self.noise_refiner = nn.ModuleList(
-            [
-                OmniGen2TransformerBlock(
-                    hidden_size,
-                    num_attention_heads,
-                    num_kv_heads,
-                    multiple_of,
-                    ffn_dim_multiplier,
-                    norm_eps,
-                    modulation=True,
-                    use_fused_rms_norm=use_fused_rms_norm,
-                    use_fused_swiglu=use_fused_swiglu
-                )
-                for _ in range(num_refiner_layers)
-            ]
-        )
+        # Initialize transformer blocks
+        self.noise_refiner = nn.ModuleList([
+            OmniGen2TransformerBlock(
+                hidden_size,
+                num_attention_heads,
+                num_kv_heads,
+                multiple_of,
+                ffn_dim_multiplier,
+                norm_eps,
+                modulation=True,
+                use_fused_rms_norm=use_fused_rms_norm,
+                use_fused_swiglu=use_fused_swiglu,
+            )
+            for _ in range(num_refiner_layers)
+        ])
 
-        self.ref_image_refiner = nn.ModuleList(
-            [
-                OmniGen2TransformerBlock(
-                    hidden_size,
-                    num_attention_heads,
-                    num_kv_heads,
-                    multiple_of,
-                    ffn_dim_multiplier,
-                    norm_eps,
-                    modulation=True,
-                    use_fused_rms_norm=use_fused_rms_norm,
-                    use_fused_swiglu=use_fused_swiglu
-                )
-                for _ in range(num_refiner_layers)
-            ]
-        )
+        self.ref_image_refiner = nn.ModuleList([
+            OmniGen2TransformerBlock(
+                hidden_size,
+                num_attention_heads,
+                num_kv_heads,
+                multiple_of,
+                ffn_dim_multiplier,
+                norm_eps,
+                modulation=True,
+                use_fused_rms_norm=use_fused_rms_norm,
+                use_fused_swiglu=use_fused_swiglu,
+            )
+            for _ in range(num_refiner_layers)
+        ])
 
         self.context_refiner = nn.ModuleList(
             [
@@ -327,7 +364,12 @@ class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
 
         self.initialize_weights()
 
-    def initialize_weights(self):
+    def initialize_weights(self) -> None:
+        """
+        Initialize the weights of the model.
+        
+        Uses Xavier uniform initialization for linear layers.
+        """
         nn.init.xavier_uniform_(self.x_embedder.weight)
         nn.init.constant_(self.x_embedder.bias, 0.0)
 
@@ -341,7 +383,7 @@ class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
         
         nn.init.normal_(self.image_index_embedding, std=0.02)
 
-    def img_patch_embed_and_refine_separate_all(
+    def img_patch_embed_and_refine(
         self,
         hidden_states,
         ref_image_hidden_states,
@@ -484,7 +526,7 @@ class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
         text_attention_mask: torch.Tensor,
         ref_image_hidden_states: Optional[List[List[torch.Tensor]]] = None,
         attention_kwargs: Optional[Dict[str, Any]] = None,
-        return_dict: bool = True,
+        return_dict: bool = False,
     ) -> Union[torch.Tensor, Transformer2DModelOutput]:
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
@@ -545,7 +587,7 @@ class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
         for layer in self.context_refiner:
             text_hidden_states = layer(text_hidden_states, text_attention_mask, context_rotary_emb)
         
-        combined_img_hidden_states = self.img_patch_embed_and_refine_separate_all(
+        combined_img_hidden_states = self.img_patch_embed_and_refine(
             hidden_states,
             ref_image_hidden_states,
             img_mask,
@@ -592,7 +634,6 @@ class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
             # remove `lora_scale` from each PEFT layer
             unscale_lora_layers(self, lora_scale)
 
-        return output
-        # if not return_dict:
-        #     return (output,)
-        # return Transformer2DModelOutput(sample=output)
+        if not return_dict:
+            return output
+        return Transformer2DModelOutput(sample=output)

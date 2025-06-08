@@ -138,7 +138,6 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
             timesteps = np.linspace(0, 1, num_inference_steps + 1, dtype=np.float32)[:-1]
             if self.config.dynamic_time_shift and num_tokens is not None:
                 m = np.sqrt(num_tokens) / 40 # when input resolution is 320 * 320, m = 1, when input resolution is 1024 * 1024, m = 3.2
-                print(f"{m=}", flush=True)
                 timesteps = timesteps / (m - m * timesteps + timesteps)
 
         timesteps = torch.from_numpy(timesteps).to(dtype=torch.float32, device=device)

@@ -1,27 +1,32 @@
-# Copyright 2024 Black Forest Labs, The HuggingFace Team and The InstantX Team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""
+OmniGen2 Diffusion Pipeline
+
+Copyright 2025 BAAI, The OmniGen2 Team and The HuggingFace Team. All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
 
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import math
 
+from PIL import Image
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from transformers import Qwen2PreTrainedModel, Qwen2Tokenizer, Qwen2TokenizerFast
+from transformers import Qwen2_5_VLModel, Qwen2Tokenizer, Qwen2TokenizerFast
 
 from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
 from diffusers.models.autoencoders import AutoencoderKL
@@ -54,14 +59,13 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 @dataclass
 class FMPipelineOutput(BaseOutput):
     """
-    Output class for Stable Diffusion pipelines.
+    Output class for OmniGen2 pipeline.
 
     Args:
-        images (`List[PIL.Image.Image]` or `np.ndarray`)
-            List of denoised PIL images of length `batch_size` or numpy array of shape `(batch_size, height, width,
-            num_channels)`. PIL images or numpy array present the denoised images of the diffusion pipeline.
+        images (Union[List[PIL.Image.Image], np.ndarray]): 
+            List of denoised PIL images of length `batch_size` or numpy array of shape 
+            `(batch_size, height, width, num_channels)`. Contains the generated images.
     """
-
     images: Union[List[PIL.Image.Image], np.ndarray]
 
 
@@ -112,15 +116,42 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
-class FlowMatchingPipeline(DiffusionPipeline):
+class OmniGen2Pipeline(DiffusionPipeline):
+    """
+    Pipeline for text-to-image generation using OmniGen2.
+
+    This pipeline implements a text-to-image generation model that uses:
+    - Qwen2.5-VL for text encoding
+    - A custom transformer architecture for image generation
+    - VAE for image encoding/decoding
+    - FlowMatchEulerDiscreteScheduler for noise scheduling
+
+    Args:
+        transformer (OmniGen2Transformer2DModel): The transformer model for image generation.
+        vae (AutoencoderKL): The VAE model for image encoding/decoding.
+        scheduler (FlowMatchEulerDiscreteScheduler): The scheduler for noise scheduling.
+        text_encoder (Qwen2_5_VLModel): The text encoder model.
+        tokenizer (Union[Qwen2Tokenizer, Qwen2TokenizerFast]): The tokenizer for text processing.
+    """
+
     def __init__(
         self,
         transformer: OmniGen2Transformer2DModel,
         vae: AutoencoderKL,
         scheduler: FlowMatchEulerDiscreteScheduler,
-        text_encoder: Qwen2PreTrainedModel,
+        text_encoder: Qwen2_5_VLModel,
         tokenizer: Union[Qwen2Tokenizer, Qwen2TokenizerFast],
-    ):
+    ) -> None:
+        """
+        Initialize the OmniGen2 pipeline.
+
+        Args:
+            transformer: The transformer model for image generation.
+            vae: The VAE model for image encoding/decoding.
+            scheduler: The scheduler for noise scheduling.
+            text_encoder: The text encoder model.
+            tokenizer: The tokenizer for text processing.
+        """
         super().__init__()
 
         self.register_modules(
@@ -136,18 +167,33 @@ class FlowMatchingPipeline(DiffusionPipeline):
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor, do_resize=False)
         self.default_sample_size = 64
 
-    # Copied from diffusers.pipelines.flux.pipeline_flux.FluxPipeline.prepare_latents
     def prepare_latents(
         self,
-        batch_size,
-        num_channels_latents,
-        height,
-        width,
-        dtype,
-        device,
-        generator,
-        latents=None,
-    ):
+        batch_size: int,
+        num_channels_latents: int,
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        generator: Optional[torch.Generator],
+        latents: Optional[torch.FloatTensor] = None,
+    ) -> torch.FloatTensor:
+        """
+        Prepare the initial latents for the diffusion process.
+
+        Args:
+            batch_size: The number of images to generate.
+            num_channels_latents: The number of channels in the latent space.
+            height: The height of the generated image.
+            width: The width of the generated image.
+            dtype: The data type of the latents.
+            device: The device to place the latents on.
+            generator: The random number generator to use.
+            latents: Optional pre-computed latents to use instead of random initialization.
+
+        Returns:
+            torch.FloatTensor: The prepared latents tensor.
+        """
         height = int(height) // self.vae_scale_factor
         width = int(width) // self.vae_scale_factor
 
@@ -159,7 +205,16 @@ class FlowMatchingPipeline(DiffusionPipeline):
             latents = latents.to(device)
         return latents
 
-    def encode_vae(self, img):
+    def encode_vae(self, img: torch.FloatTensor) -> torch.FloatTensor:
+        """
+        Encode an image into the VAE latent space.
+
+        Args:
+            img: The input image tensor to encode.
+
+        Returns:
+            torch.FloatTensor: The encoded latent representation.
+        """
         z0 = self.vae.encode(img.to(dtype=self.vae.dtype)).latent_dist.sample()
         if self.vae.config.shift_factor is not None:
             z0 = z0 - self.vae.config.shift_factor
@@ -168,15 +223,27 @@ class FlowMatchingPipeline(DiffusionPipeline):
         z0 = z0.to(dtype=self.vae.dtype)
         return z0
 
-    # Copied from diffusers.pipelines.controlnet_sd3.pipeline_stable_diffusion_3_controlnet.StableDiffusion3ControlNetPipeline.prepare_image
     def prepare_image(
         self,
-        images,
-        batch_size,
-        num_images_per_prompt,
-        device,
-        dtype,
-    ):
+        images: Union[List[PIL.Image.Image], PIL.Image.Image],
+        batch_size: int,
+        num_images_per_prompt: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> List[Optional[torch.FloatTensor]]:
+        """
+        Prepare input images for processing by encoding them into the VAE latent space.
+
+        Args:
+            images: Single image or list of images to process.
+            batch_size: The number of images to generate per prompt.
+            num_images_per_prompt: The number of images to generate for each prompt.
+            device: The device to place the encoded latents on.
+            dtype: The data type of the encoded latents.
+
+        Returns:
+            List[Optional[torch.FloatTensor]]: List of encoded latent representations for each image.
+        """
         if batch_size == 1:
             images = [images]
         latents = []
@@ -184,10 +251,8 @@ class FlowMatchingPipeline(DiffusionPipeline):
             if img is not None and len(img) > 0:
                 ref_latents = []
                 for j, img_j in enumerate(img):
-                    # print(f"{j=} {img_j.shape=}")
                     img_j = self.image_processor.preprocess(img_j)
                     ref_latents.append(self.encode_vae(img_j.to(device=device)).squeeze(0))
-                    # print(f"{j=} {ref_latents[j].shape=}")
             else:
                 ref_latents = None
             for _ in range(num_images_per_prompt):
@@ -202,6 +267,23 @@ class FlowMatchingPipeline(DiffusionPipeline):
         max_sequence_length: int = 256,
         use_text_encoder_penultimate_layer_feats: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get prompt embeddings from the Qwen2 text encoder.
+
+        Args:
+            prompt: The prompt or list of prompts to encode.
+            device: The device to place the embeddings on. If None, uses the pipeline's device.
+            max_sequence_length: Maximum sequence length for tokenization.
+            use_text_encoder_penultimate_layer_feats: Whether to use the penultimate layer features.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+                - The prompt embeddings tensor
+                - The attention mask tensor
+
+        Raises:
+            Warning: If the input text is truncated due to sequence length limitations.
+        """
         device = device or self._execution_device
         prompt = [prompt] if isinstance(prompt, str) else prompt
         text_inputs = self.tokenizer(
@@ -245,16 +327,13 @@ class FlowMatchingPipeline(DiffusionPipeline):
 
         prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
 
-        _, seq_len, _ = prompt_embeds.shape
-
         return prompt_embeds, prompt_attention_mask
     
-    # Adapted from diffusers.pipelines.deepfloyd_if.pipeline_if.encode_prompt
     def encode_prompt(
         self,
         prompt: Union[str, List[str]],
         do_classifier_free_guidance: bool = True,
-        negative_prompt: Union[str, List[str]] = None,
+        negative_prompt: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: int = 1,
         device: Optional[torch.device] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
@@ -288,15 +367,13 @@ class FlowMatchingPipeline(DiffusionPipeline):
             max_sequence_length (`int`, defaults to `256`):
                 Maximum sequence length to use for the prompt.
         """
-        if device is None:
-            device = self._execution_device
+        device = device or self._execution_device
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
         if prompt is not None:
             batch_size = len(prompt)
         else:
             batch_size = prompt_embeds.shape[0]
-        # print(f"{prompt_embeds=}", flush=True)
         if prompt_embeds is None:
             prompt_embeds, prompt_attention_mask = self._get_qwen2_prompt_embeds(
                 prompt=prompt,
@@ -355,20 +432,20 @@ class FlowMatchingPipeline(DiffusionPipeline):
         return self._num_timesteps
 
     @property
-    def do_classifier_free_guidance(self):
-        return self._guidance_scale != 1
+    def do_text_classifier_free_guidance(self):
+        return self._text_guidance_scale != 1
     
     @property
-    def guidance_scale(self):
-        return self._guidance_scale
+    def text_guidance_scale(self):
+        return self._text_guidance_scale
     
     @property
-    def do_ref_classifier_free_guidance(self):
-        return self._ref_guidance_scale != -1
+    def do_image_classifier_free_guidance(self):
+        return self._image_guidance_scale != -1
     
     @property
-    def ref_guidance_scale(self):
-        return self._ref_guidance_scale
+    def image_guidance_scale(self):
+        return self._image_guidance_scale
     
     @torch.no_grad()
     def __call__(
@@ -384,11 +461,13 @@ class FlowMatchingPipeline(DiffusionPipeline):
         callback_on_step_end_tensor_inputs: Optional[List[str]] = None,
         input_images: List[PIL.Image.Image] = None,
         num_images_per_prompt: int = 1,
-        height: Optional[int] = 512,
-        width: Optional[int] = 512,
+        height: Optional[int] = 1024,
+        width: Optional[int] = 1024,
+        max_pixels: Optional[int] = 1024 * 1024,
+        align_res: bool = True,
         num_inference_steps: int = 28,
-        guidance_scale: float = 4.0,
-        ref_guidance_scale: float = 1.0,
+        text_guidance_scale: float = 4.0,
+        image_guidance_scale: float = 1.0,
         attention_kwargs: Optional[Dict[str, Any]] = None,
         timesteps: List[int] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -407,8 +486,8 @@ class FlowMatchingPipeline(DiffusionPipeline):
         height = height // 16 * 16
         width = width // 16 * 16
 
-        self._guidance_scale = guidance_scale
-        self._ref_guidance_scale = ref_guidance_scale
+        self._text_guidance_scale = text_guidance_scale
+        self._image_guidance_scale = image_guidance_scale
         self._attention_kwargs = attention_kwargs
 
         # 2. Define call parameters
@@ -429,7 +508,7 @@ class FlowMatchingPipeline(DiffusionPipeline):
             negative_prompt_attention_mask,
         ) = self.encode_prompt(
             prompt,
-            self.do_classifier_free_guidance,
+            self.do_text_classifier_free_guidance,
             negative_prompt=negative_prompt,
             num_images_per_prompt=num_images_per_prompt,
             device=device,
@@ -457,7 +536,23 @@ class FlowMatchingPipeline(DiffusionPipeline):
         dtype = self.vae.dtype
 
         if input_images is not None:
-            input_images = [img.resize((img.width // 16 * 16, img.height // 16 * 16)) for img in input_images]
+            for input_image in input_images:
+                width, height = input_image.size
+                cur_pixels = height * width
+                ratio = (max_pixels / cur_pixels) ** 0.5
+                ratio = min(ratio, 1.0) # do not upscale input image
+
+                new_height, new_width = int(height * ratio) // 16 * 16, int(width * ratio) // 16 * 16
+                input_image = input_image.resize((new_width, new_height), resample=Image.BICUBIC)
+        
+        if len(input_images) == 1 and align_res:
+            height, width = (input_images[0].shape[-1], input_images[0].shape[-2])
+        else:
+            cur_pixels = height * width
+            ratio = 1
+            ratio = (max_pixels / cur_pixels) ** 0.5
+
+            height, width = int(height * ratio) // 16 * 16, int(width * ratio) // 16 * 16
 
         # 3. Prepare control image
         ref_latents = self.prepare_image(
@@ -541,7 +636,7 @@ class FlowMatchingPipeline(DiffusionPipeline):
                     ref_image_hidden_states=ref_latents,
                 )
                 
-                if self.do_classifier_free_guidance and self.do_ref_classifier_free_guidance:
+                if self.do_text_classifier_free_guidance and self.do_image_classifier_free_guidance:
                     model_pred_ref = self.predict(
                         t=t,
                         latents=latents,
@@ -551,7 +646,7 @@ class FlowMatchingPipeline(DiffusionPipeline):
                         ref_image_hidden_states=ref_latents,
                     )
 
-                    if self.ref_guidance_scale != 1:
+                    if self.image_guidance_scale != 1:
                         model_pred_uncond = self.predict(
                             t=t,
                             latents=latents,
@@ -563,9 +658,9 @@ class FlowMatchingPipeline(DiffusionPipeline):
                     else:
                         model_pred_uncond = torch.zeros_like(model_pred)
 
-                    model_pred = model_pred_uncond + self.ref_guidance_scale * (model_pred_ref - model_pred_uncond) + \
-                    self.guidance_scale * (model_pred - model_pred_ref)
-                elif self.do_classifier_free_guidance:
+                    model_pred = model_pred_uncond + self.image_guidance_scale * (model_pred_ref - model_pred_uncond) + \
+                    self.text_guidance_scale * (model_pred - model_pred_ref)
+                elif self.do_text_classifier_free_guidance:
                     model_pred_uncond = self.predict(
                         t=t,
                         latents=latents,
@@ -574,7 +669,7 @@ class FlowMatchingPipeline(DiffusionPipeline):
                         prompt_attention_mask=negative_prompt_attention_mask,
                         ref_image_hidden_states=None,
                     )
-                    model_pred = model_pred_uncond + self.guidance_scale * (model_pred - model_pred_uncond)
+                    model_pred = model_pred_uncond + self.text_guidance_scale * (model_pred - model_pred_uncond)
 
                 latents = self.scheduler.step(model_pred, t, latents, return_dict=False)[0]
 

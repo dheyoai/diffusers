@@ -1,108 +1,113 @@
-import os
-import random
-from typing import List, Optional, Tuple, Union
-from datetime import datetime
-
 import gradio as gr
-import torch
 from PIL import Image
-from torchvision.transforms.functional import to_pil_image, to_tensor
-from accelerate import Accelerator
-from transformers import AutoTokenizer, Qwen2_5_VLModel as TextEncoder
-from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
+import os
+import argparse
+import random
+import numpy as np
 import dotenv
-from omegaconf import OmegaConf
 
-from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
-from omnigen2.models.transformers.transformer_omnigen2 import OmniGen2Transformer2DModel
-from omnigen2.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler as Scheduler
-
-# Load environment variables
 dotenv.load_dotenv(override=True)
 
-# Configuration
-class Config:
-    CONFIG_PATH = os.getenv("CONFIG_PATH", "configs/default.yml")
-    MODEL_PATH = os.getenv("MODEL_PATH", "pretrained_models/model.bin")
-    VAE_PATH = os.getenv("VAE_PATH", "black-forest-labs/FLUX.1-dev")
-    TOKENIZER_PATH = os.getenv("TOKENIZER_PATH", "Qwen/Qwen2.5-VL-3B-Instruct")
-    TEXT_ENCODER_PATH = os.getenv("TEXT_ENCODER_PATH", "Qwen/Qwen2.5-VL-3B-Instruct")
-    DEFAULT_NEGATIVE_PROMPT = "(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar"
-    SAVE_IMAGES = True
-    OUTPUT_DIR = "outputs"
+from PIL import Image
 
-# Initialize global variables
-pipeline = None
-generator = None
-save_images = Config.SAVE_IMAGES
+import torch
+from torchvision.transforms.functional import to_pil_image, to_tensor
 
-def load_pipeline(time_shift_scale: float, accelerator: Accelerator, weight_dtype: torch.dtype) -> OmniGen2Pipeline:
-    """Load and initialize the OmniGen2 pipeline with all necessary components."""
-    conf = OmegaConf.load(Config.CONFIG_PATH)
-    transformer = OmniGen2Transformer2DModel(**conf.model.arch_opt)
+from accelerate import Accelerator
+
+from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
+
+MODEL_PATH = "OmniGen2/OmniGen2-preview"
+NEGATIVE_PROMPT = "(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar"
+# NEGATIVE_PROMPT = "low quality, blurry, out of focus, distorted, bad anatomy, poorly drawn, pixelated, grainy, artifacts, watermark, text, signature, deformed, extra limbs, cropped, jpeg artifacts, ugly"
+
+def crop_arr(pil_image, max_image_size, img_scale_num):
+    """
+    Center cropping implementation from ADM.
+    https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
+    """
+    while min(*pil_image.size) >= 2 * max_image_size:
+        pil_image = pil_image.resize(
+            tuple(x // 2 for x in pil_image.size), resample=Image.BOX
+        )
+
+    if max(*pil_image.size) > max_image_size:
+        scale = max_image_size / max(*pil_image.size)
+        pil_image = pil_image.resize(
+            tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
+        )
     
-    state_dict = torch.load(Config.MODEL_PATH, map_location='cpu')
-    missing, unexpect = transformer.load_state_dict(state_dict, strict=False)
-    print(f"Missing parameters: {missing}")
-    print(f"Unexpected parameters: {unexpect}")
+    if min(*pil_image.size) < img_scale_num:
+        scale = img_scale_num / min(*pil_image.size)
+        pil_image = pil_image.resize(
+            tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
+        )
     
-    transformer = transformer.eval()
-    transformer = transformer.to(accelerator.device, dtype=weight_dtype)
-    transformer = accelerator.prepare(transformer)
-    transformer = accelerator.unwrap_model(transformer)
+    arr = np.array(pil_image)
+    crop_y1 = (arr.shape[0] % img_scale_num) // 2
+    crop_y2 = arr.shape[0] % img_scale_num - crop_y1
 
-    vae = AutoencoderKL.from_pretrained(Config.VAE_PATH, subfolder="vae")
-    vae = vae.to(accelerator.device, dtype=weight_dtype)
+    crop_x1 = (arr.shape[1] % img_scale_num) // 2
+    crop_x2 = arr.shape[1] % img_scale_num - crop_x1
 
-    text_tokenizer = AutoTokenizer.from_pretrained(Config.TOKENIZER_PATH)
-    text_tokenizer.padding_side = "right"
+    arr = arr[crop_y1:arr.shape[0]-crop_y2, crop_x1:arr.shape[1]-crop_x2]
+    
+    return Image.fromarray(arr)
 
-    text_encoder = TextEncoder.from_pretrained(Config.TEXT_ENCODER_PATH, torch_dtype=weight_dtype)
-    text_encoder = text_encoder.eval()
-    text_encoder = text_encoder.to(accelerator.device, dtype=weight_dtype)
 
-    scheduler_kwargs = {'time_shift_scale': time_shift_scale}
-    pipeline = OmniGen2Pipeline(
-        transformer=transformer,
-        vae=vae,
-        text_encoder=text_encoder,
-        tokenizer=text_tokenizer,
-        scheduler=Scheduler(**scheduler_kwargs),
-    )
-    return pipeline.to(accelerator.device, dtype=weight_dtype)
+def load_pipeline(accelerator, weight_dtype):
+    pipeline = OmniGen2Pipeline.from_pretrained(MODEL_PATH,
+                                                torch_dtype=weight_dtype,
+                                                trust_remote_code=True,
+                                                token=os.getenv("HF_TOKEN"))
+    pipeline = pipeline.to(accelerator.device, dtype=weight_dtype)
+    return pipeline
 
-def preprocess(instruction: str, negative_prompt: str, pipeline: OmniGen2Pipeline) -> Tuple[str, str]:
-    """Preprocess the instruction and negative prompt for the model."""
+
+def preprocess(instruction, negative_prompt, pipeline):
     instruction = [{"role": "user", "content": instruction}]
     instruction = pipeline.tokenizer.apply_chat_template(instruction, tokenize=False, add_generation_prompt=False)
-    instruction = instruction.replace("You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", 
-                                    "You are a helpful assistant that generates high-quality images based on user instructions.")
-    instruction = instruction.replace("You are a helpful assistant.", 
-                                    "You are a helpful assistant that generates high-quality images based on user instructions.")
+    if "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." in instruction:
+        instruction = instruction.replace("You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
+    else:
+        instruction = instruction.replace("You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
 
     negative_prompt = [{"role": "user", "content": negative_prompt}]
     negative_prompt = pipeline.tokenizer.apply_chat_template(negative_prompt, tokenize=False, add_generation_prompt=False)
-    negative_prompt = negative_prompt.replace("You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", 
-                                            "You are a helpful assistant.")
 
+    if "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." in negative_prompt:
+        negative_prompt = negative_prompt.replace("You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
+    else:
+        negative_prompt = negative_prompt.replace("You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
+    
+    # if "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." in negative_prompt:
+    #     negative_prompt = negative_prompt.replace("You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", "You are a helpful assistant that generates images.")
+    # else:
+    #     negative_prompt = negative_prompt.replace("You are a helpful assistant.", "You are a helpful assistant that generates images.")
+
+    print("instruction:", instruction)
+    print("negative_prompt:", negative_prompt)
+    print('-------------------')
     return instruction, negative_prompt
 
-def run(instruction: str, 
-        width_input: int, 
-        height_input: int, 
-        num_inference_steps: int, 
-        image_input_1: Optional[Image.Image], 
-        image_input_2: Optional[Image.Image], 
-        image_input_3: Optional[Image.Image],
-        negative_prompt: str, 
-        guidance_scale_input: float, 
-        num_images_per_prompt: int) -> Image.Image:
-    """Run the image generation pipeline with the given parameters."""
-    input_images = [img for img in [image_input_1, image_input_2, image_input_3] if img is not None]
-    if not input_images:
-        input_images = None
+
+def run(instruction, width_input, height_input, num_inference_steps, image_input_1, image_input_2, image_input_3,
+        negative_prompt, guidance_scale_input, img_guidance_scale_input,  num_images_per_prompt, max_input_image_size, seed_input):
+
+    input_images = [image_input_1, image_input_2, image_input_3]
+    input_images = [img for img in input_images if img is not None]
+    if len(input_images) == 0: input_images = None
+
+    if input_images is not None:
+        input_images = [crop_arr(x, max_input_image_size, 16) for x in input_images]
+
+    if input_images is not None and len(input_images) == 1: width_input, height_input = input_images[0].size
 
     instruction, negative_prompt = preprocess(instruction, negative_prompt, pipeline)
+
+    if seed_input == -1:
+        seed_input = random.randint(0, 2**16-1)
+    generator = torch.Generator(device=accelerator.device).manual_seed(seed_input)
 
     results = pipeline(
         prompt=instruction,
@@ -112,6 +117,7 @@ def run(instruction: str,
         num_inference_steps=num_inference_steps,
         max_sequence_length=1024,
         guidance_scale=guidance_scale_input,
+        ref_guidance_scale=img_guidance_scale_input,
         negative_prompt=negative_prompt,
         num_images_per_prompt=num_images_per_prompt,
         generator=generator,
@@ -119,131 +125,227 @@ def run(instruction: str,
     )
     
     vis_images = [to_tensor(image) * 2 - 1 for image in results.images]
-    output_image = create_collage(vis_images)
+
+    # Concatenate input images of different sizes horizontally
+    max_height = max(img.shape[-2] for img in vis_images)
+    total_width = sum(img.shape[-1] for img in vis_images)
+    canvas = torch.zeros((3, max_height, total_width), device=vis_images[0].device)
+    
+    current_x = 0
+    for i, img in enumerate(vis_images):
+        h, w = img.shape[-2:]
+        # Place image at the top of canvas
+        canvas[:, :h, current_x:current_x+w] = img * 0.5 + 0.5
+        current_x += w
+    output_image = to_pil_image(canvas)
 
     if save_images:
-        save_output_image(output_image)
+        # Save All Generated Images
+        from datetime import datetime
+        # Create outputs directory if it doesn't exist
+        os.makedirs('outputs_yrr', exist_ok=True)
+        # Generate unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
+        output_path = os.path.join('outputs_yrr', f'{timestamp}.png')
+        # Save the image
+        output_image.save(output_path)
 
     return output_image
 
-def create_collage(images: List[torch.Tensor]) -> Image.Image:
-    """Create a horizontal collage from a list of images."""
-    max_height = max(img.shape[-2] for img in images)
-    total_width = sum(img.shape[-1] for img in images)
-    canvas = torch.zeros((3, max_height, total_width), device=images[0].device)
-    
-    current_x = 0
-    for img in images:
-        h, w = img.shape[-2:]
-        canvas[:, :h, current_x:current_x+w] = img * 0.5 + 0.5
-        current_x += w
-    
-    return to_pil_image(canvas)
-
-def save_output_image(image: Image.Image) -> None:
-    """Save the generated image with timestamp."""
-    os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
-    output_path = os.path.join(Config.OUTPUT_DIR, f'{timestamp}.png')
-    image.save(output_path)
-
-def get_example() -> List[List]:
-    """Return example prompts and parameters for the demo."""
-    return [
+def get_example():
+    case = [
         [
             "A curly-haired man in a red shirt is drinking tea.",
-            1024, 1024, 50, None, None, None, "", 4.0, 1,
+            1024,
+            1024,
+            50,
+            None,
+            None,
+            None,
+            NEGATIVE_PROMPT,
+            5.0,
+            1,
+            1024,
+            0,
         ],
         [
-            "A car toy and a bear toy are placed on the bench",
-            1024, 1024, 50, Image.open("example_images/02.jpg"), None, None, "", 4.0, 1,
+            "A curly-haired man in a red shirt is drinking tea.",
+            1024,
+            1024,
+            50,
+            None,
+            None,
+            None,
+            NEGATIVE_PROMPT,
+            5.0,
+            1,
+            1024,
+            0,
         ],
-        [
-            "The woman waves her hand happily in the crowd",
-            1024, 1024, 50, Image.open("example_images/zhang.png"), None, None, "", 4.0, 1,
-        ],
-        [
-            "Change the tea in the cup to coffee",
-            1024, 1024, 50, Image.open("example_images/tea.jpg"), None, None, "", 4.0, 1,
-        ],
-        [
-            "Put the flower in the vase, then put them on a wooden table of a living room",
-            1024, 1024, 50, Image.open("example_images/rose.jpg"), Image.open("example_images/vase.jpg"), None, "", 4.0, 1,
-        ],
-    ]
-
-def create_demo() -> gr.Blocks:
-    """Create the Gradio interface."""
-    with gr.Blocks() as demo:
-        gr.Markdown("# OmniGen v2: Unified Image Generation [paper](https://arxiv.org/abs/2409.11340) [code](https://github.com/VectorSpaceLab/OmniGen)")
-        gr.Markdown("""
-        OmniGen2 is a unified image generation model that can handle various image generation tasks including text-to-image, image editing, and multi-image composition.
-        """)
         
-        with gr.Row():
+    ]
+    return case
+
+
+def run_for_examples(instruction, width_input, height_input, num_inference_steps, image_input_1, image_input_2, image_input_3,
+        negative_prompt, guidance_scale_input, num_images_per_prompt):    
+    
+    return run(instruction, width_input, height_input, num_inference_steps, image_input_1, image_input_2, image_input_3, negative_prompt, guidance_scale_input, num_images_per_prompt)
+
+
+description = """
+This is currently a demo of OmniGen v2. Contents to be added.
+"""
+
+article = """
+citation to be added
+"""
+
+# Gradio 
+with gr.Blocks() as demo:
+    gr.Markdown("# OmniGen v2: Unified Image Generation [paper](https://arxiv.org/abs/2409.11340) [code](https://github.com/VectorSpaceLab/OmniGen)")
+    gr.Markdown(description)
+    with gr.Row():
+        with gr.Column():
+            # text prompt
+            instruction = gr.Textbox(
+                label="Enter your prompt, use <img><|image_i|></img> to represent i-th input image", placeholder="Type your prompt here..."
+            )
+
+            with gr.Row(equal_height=True):
+                # input images
+                image_input_1 = gr.Image(label="<img><|image_1|></img>", type="pil")
+                image_input_2 = gr.Image(label="<img><|image_2|></img>", type="pil")
+                image_input_3 = gr.Image(label="<img><|image_3|></img>", type="pil")
+            
+            generate_button = gr.Button("Generate Image")
+
+            negative_prompt = gr.Textbox(
+                label="Enter your negative prompt", placeholder="Type your negative prompt here...", value=NEGATIVE_PROMPT,
+            )
+
+            # slider
+            height_input = gr.Slider(
+                label="Height", minimum=256, maximum=1024, value=1024, step=128
+            )
+            width_input = gr.Slider(
+                label="Width", minimum=256, maximum=1024, value=1024, step=128
+            )
+
+            guidance_scale_input = gr.Slider(
+                label="Guidance Scale", minimum=1.0, maximum=8.0, value=5.0, step=0.1
+            )
+
+            img_guidance_scale_input = gr.Slider(
+                label="img_guidance_scale", minimum=1.0, maximum=8.0, value=2.0, step=0.1
+            )
+
+            num_inference_steps = gr.Slider(
+                label="Inference Steps", minimum=20, maximum=100, value=50, step=1
+            )
+
+            num_images_per_prompt = gr.Slider(
+                label="Number of images per prompt", minimum=1, maximum=4, value=1, step=1
+            )
+
+            time_shift_scale = gr.Slider(
+                label="time_shift_scale", minimum=1.0, maximum=5.0, value=3.0, step=0.1
+            )
+
+            # bf16 = gr.Checkbox(
+            #     label="bf16", value=True, info="Whether to use bf16."
+            # )
+
+            seed_input = gr.Slider(
+                label="Seed", minimum=-1, maximum=2147483647, value=0, step=1
+            )
+            # randomize_seed = gr.Checkbox(label="Randomize seed", value=False)
+
+            max_input_image_size = gr.Slider(
+                label="max_input_image_size", minimum=256, maximum=1024, value=1024, step=256
+            )
+
+            # separate_cfg_infer = gr.Checkbox(
+            #     label="separate_cfg_infer", info="Whether to use separate inference process for different guidance. This will reduce the memory cost.", value=True,
+            # )
+            # offload_model = gr.Checkbox(
+            #     label="offload_model", info="Offload model to CPU, which will significantly reduce the memory cost but slow down the generation speed. You can cancel separate_cfg_infer and set offload_model=True. If both separate_cfg_infer and offload_model are True, further reduce the memory, but slowest generation", value=False,
+            # )
+            # use_input_image_size_as_output = gr.Checkbox(
+            #     label="use_input_image_size_as_output", info="Automatically adjust the output image size to be same as input image size. For editing and controlnet task, it can make sure the output image has the same size as input image leading to better performance", value=False,
+            # )
+
+            # generate
+            
+        with gr.Column():
             with gr.Column():
-                instruction = gr.Textbox(
-                    label="Enter your prompt, use <img><|image_i|></img> to represent i-th input image",
-                    placeholder="Type your prompt here..."
-                )
+                # output image
+                output_image = gr.Image(label="Output Image")
+                save_images = gr.Checkbox(label="Save generated images", value=False)
 
-                with gr.Row(equal_height=True):
-                    image_input_1 = gr.Image(label="<img><|image_1|></img>", type="pil")
-                    image_input_2 = gr.Image(label="<img><|image_2|></img>", type="pil")
-                    image_input_3 = gr.Image(label="<img><|image_3|></img>", type="pil")
+    bf16 = True
+    accelerator = Accelerator(mixed_precision="bf16" if bf16 else 'no')
+    weight_dtype = torch.bfloat16 if bf16 else torch.float32    
 
-                with gr.Row():
-                    width_input = gr.Slider(512, 1024, 1024, step=64, label="Width")
-                    height_input = gr.Slider(512, 1024, 1024, step=64, label="Height")
+    pipeline = load_pipeline(accelerator, weight_dtype)
 
-                with gr.Row():
-                    num_inference_steps = gr.Slider(1, 100, 50, step=1, label="Inference Steps")
-                    guidance_scale_input = gr.Slider(1.0, 20.0, 4.0, step=0.1, label="Guidance Scale")
+    # click
+    generate_button.click(
+        run,
+        inputs=[
+            instruction,
+            width_input, 
+            height_input, 
+            num_inference_steps, 
+            image_input_1, 
+            image_input_2, 
+            image_input_3,
+            negative_prompt, 
+            guidance_scale_input, 
+            img_guidance_scale_input,
+            num_images_per_prompt,
+            max_input_image_size,
+            seed_input,
+        ],
+        outputs=output_image,
+    )
 
-                negative_prompt = gr.Textbox(
-                    label="Negative Prompt",
-                    value=Config.DEFAULT_NEGATIVE_PROMPT,
-                    placeholder="Enter negative prompt here..."
-                )
+    gr.Examples(
+        examples=get_example(),
+        fn=run_for_examples,
+        inputs=[
+            instruction,
+            width_input, 
+            height_input, 
+            num_inference_steps, 
+            image_input_1, 
+            image_input_2, 
+            image_input_3,
+            negative_prompt, 
+            guidance_scale_input, 
+            num_images_per_prompt,
+            max_input_image_size,
+            seed_input,
+        ],
+        outputs=output_image,
+    )
 
-                num_images_per_prompt = gr.Slider(1, 4, 1, step=1, label="Number of Images")
+    gr.Markdown(article)
 
-                generate_btn = gr.Button("Generate")
 
-            with gr.Column():
-                output_image = gr.Image(label="Generated Image", type="pil")
-
-        generate_btn.click(
-            fn=run,
-            inputs=[
-                instruction, width_input, height_input, num_inference_steps,
-                image_input_1, image_input_2, image_input_3,
-                negative_prompt, guidance_scale_input, num_images_per_prompt
-            ],
-            outputs=output_image
-        )
-
-        gr.Examples(
-            examples=get_example(),
-            inputs=[
-                instruction, width_input, height_input, num_inference_steps,
-                image_input_1, image_input_2, image_input_3,
-                negative_prompt, guidance_scale_input, num_images_per_prompt
-            ],
-            outputs=output_image,
-            fn=run,
-            cache_examples=True,
-        )
-
-    return demo
 
 if __name__ == "__main__":
-    # Initialize accelerator and model
-    accelerator = Accelerator(mixed_precision="bf16")
-    weight_dtype = torch.bfloat16
-    pipeline = load_pipeline(time_shift_scale=1.0, accelerator=accelerator, weight_dtype=weight_dtype)
-    generator = torch.Generator(device=accelerator.device).manual_seed(998244353)
+    parser = argparse.ArgumentParser(description='Run the OmniGen')
+    parser.add_argument('--share', action='store_true', help='Share the Gradio app')
+    args = parser.parse_args()
 
-    # Launch the demo
-    demo = create_demo()
-    demo.launch(share=True)
+    # launch
+    demo.launch(share=args.share)
+
+"""
+CUDA_VISIBLE_DEVICES=0 python shitao_app.py --share
+
+CUDA_VISIBLE_DEVICES=1 python shitao_app.py --share
+
+"""
+

@@ -28,18 +28,16 @@
     <p>
 </h4>
 
-
+OmniGen2 is a unified image generation model that can handle various image generation tasks including text-to-image, image editing, and multi-image composition.
 
 ## 1. News
 - 2025-06-09:🔥🔥 We release OmniGen2-preview, a multimodal generation model. 
 
 
-OmniGen2 is a unified image generation model that can handle various image generation tasks including text-to-image, image editing, and multi-image composition.
-
 ## TODO
-- [] OmniGen2 checkpoint
-- [] OmniGen2 technical report
-- [] Trainging data and scripts
+- [ ] OmniGen2 checkpoint
+- [ ] OmniGen2 technical report
+- [ ] Trainging data and scripts
 
 
 ## Functions

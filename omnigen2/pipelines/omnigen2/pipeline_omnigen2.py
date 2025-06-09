@@ -329,6 +329,17 @@ class OmniGen2Pipeline(DiffusionPipeline):
 
         return prompt_embeds, prompt_attention_mask
     
+    def _apply_chat_template(self, prompt: str):
+        prompt = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant that generates high-quality images based on user instructions.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+        prompt = self.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=False)
+        return prompt
+
     def encode_prompt(
         self,
         prompt: Union[str, List[str]],
@@ -370,6 +381,8 @@ class OmniGen2Pipeline(DiffusionPipeline):
         device = device or self._execution_device
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
+        prompt = [self._apply_chat_template(_prompt) for _prompt in prompt]
+
         if prompt is not None:
             batch_size = len(prompt)
         else:
@@ -395,6 +408,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
 
             # Normalize str to list
             negative_prompt = batch_size * [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+            negative_prompt = [self._apply_chat_template(_negative_prompt) for _negative_prompt in negative_prompt]
 
             if prompt is not None and type(prompt) is not type(negative_prompt):
                 raise TypeError(
@@ -459,7 +473,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
         use_text_encoder_penultimate_layer_feats: bool = False,
         max_sequence_length: Optional[int] = None,
         callback_on_step_end_tensor_inputs: Optional[List[str]] = None,
-        input_images: List[PIL.Image.Image] = None,
+        input_images: Optional[List[PIL.Image.Image]] = None,
         num_images_per_prompt: int = 1,
         height: Optional[int] = 1024,
         width: Optional[int] = 1024,
@@ -544,9 +558,11 @@ class OmniGen2Pipeline(DiffusionPipeline):
 
                 new_height, new_width = int(height * ratio) // 16 * 16, int(width * ratio) // 16 * 16
                 input_image = input_image.resize((new_width, new_height), resample=Image.BICUBIC)
+        else:
+            input_images = []
         
         if len(input_images) == 1 and align_res:
-            height, width = (input_images[0].shape[-1], input_images[0].shape[-2])
+            width, height = input_images[0].size
         else:
             cur_pixels = height * width
             ratio = 1

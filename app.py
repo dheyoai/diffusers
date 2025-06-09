@@ -1,12 +1,14 @@
+import dotenv
+dotenv.load_dotenv(override=True)
+
 import gradio as gr
+
+from typing import List, Tuple
 from PIL import Image
 import os
 import argparse
 import random
 import numpy as np
-import dotenv
-
-dotenv.load_dotenv(override=True)
 
 from PIL import Image
 
@@ -16,8 +18,10 @@ from torchvision.transforms.functional import to_pil_image, to_tensor
 from accelerate import Accelerator
 
 from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
+from omnigen2.utils.img_util import resize_image
 
-MODEL_PATH = "OmniGen2/OmniGen2-preview"
+# MODEL_PATH = "OmniGen2/OmniGen2-preview"
+MODEL_PATH = "/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe"
 NEGATIVE_PROMPT = "(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar"
 # NEGATIVE_PROMPT = "low quality, blurry, out of focus, distorted, bad anatomy, poorly drawn, pixelated, grainy, artifacts, watermark, text, signature, deformed, extra limbs, cropped, jpeg artifacts, ugly"
 
@@ -63,34 +67,6 @@ def load_pipeline(accelerator, weight_dtype):
     pipeline = pipeline.to(accelerator.device, dtype=weight_dtype)
     return pipeline
 
-
-def preprocess(instruction, negative_prompt, pipeline):
-    instruction = [{"role": "user", "content": instruction}]
-    instruction = pipeline.tokenizer.apply_chat_template(instruction, tokenize=False, add_generation_prompt=False)
-    if "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." in instruction:
-        instruction = instruction.replace("You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
-    else:
-        instruction = instruction.replace("You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
-
-    negative_prompt = [{"role": "user", "content": negative_prompt}]
-    negative_prompt = pipeline.tokenizer.apply_chat_template(negative_prompt, tokenize=False, add_generation_prompt=False)
-
-    if "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." in negative_prompt:
-        negative_prompt = negative_prompt.replace("You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
-    else:
-        negative_prompt = negative_prompt.replace("You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
-    
-    # if "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." in negative_prompt:
-    #     negative_prompt = negative_prompt.replace("You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", "You are a helpful assistant that generates images.")
-    # else:
-    #     negative_prompt = negative_prompt.replace("You are a helpful assistant.", "You are a helpful assistant that generates images.")
-
-    print("instruction:", instruction)
-    print("negative_prompt:", negative_prompt)
-    print('-------------------')
-    return instruction, negative_prompt
-
-
 def run(instruction, width_input, height_input, num_inference_steps, image_input_1, image_input_2, image_input_3,
         negative_prompt, guidance_scale_input, img_guidance_scale_input,  num_images_per_prompt, max_input_image_size, seed_input):
 
@@ -99,11 +75,10 @@ def run(instruction, width_input, height_input, num_inference_steps, image_input
     if len(input_images) == 0: input_images = None
 
     if input_images is not None:
-        input_images = [crop_arr(x, max_input_image_size, 16) for x in input_images]
+        # input_images = [crop_arr(x, max_input_image_size, 16) for x in input_images]
+        input_images = [resize_image(x, max_input_image_size * max_input_image_size, 16) for x in input_images]
 
     if input_images is not None and len(input_images) == 1: width_input, height_input = input_images[0].size
-
-    instruction, negative_prompt = preprocess(instruction, negative_prompt, pipeline)
 
     if seed_input == -1:
         seed_input = random.randint(0, 2**16-1)
@@ -116,8 +91,8 @@ def run(instruction, width_input, height_input, num_inference_steps, image_input
         height=height_input,
         num_inference_steps=num_inference_steps,
         max_sequence_length=1024,
-        guidance_scale=guidance_scale_input,
-        ref_guidance_scale=img_guidance_scale_input,
+        text_guidance_scale=guidance_scale_input,
+        image_guidance_scale=img_guidance_scale_input,
         negative_prompt=negative_prompt,
         num_images_per_prompt=num_images_per_prompt,
         generator=generator,
@@ -194,7 +169,7 @@ def run_for_examples(instruction, width_input, height_input, num_inference_steps
 
 
 description = """
-This is currently a demo of OmniGen v2. Contents to be added.
+This is currently a demo of OmniGen2. Contents to be added.
 """
 
 article = """

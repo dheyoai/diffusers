@@ -211,3 +211,5 @@ pyrightconfig.json
 local_scripts/
 
 omnigen2/utils/
+
+test_tokenizer.py

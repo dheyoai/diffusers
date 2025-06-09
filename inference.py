@@ -14,6 +14,8 @@ from torchvision.transforms.functional import to_pil_image, to_tensor
 from accelerate import Accelerator
 
 from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
+from omnigen2.utils.img_util import resize_image
+
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
@@ -47,6 +49,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1024,
         help="Output image width."
+    )
+    parser.add_argument(
+        "--max_input_image_pixels",
+        type=int,
+        default=1048576,
+        help="Maximum number of pixels for each input image."
     )
     parser.add_argument(
         "--dtype",
@@ -108,30 +116,25 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
     pipeline = pipeline.to(accelerator.device, dtype=weight_dtype)
     return pipeline
 
-def preprocess(args: argparse.Namespace, pipeline: OmniGen2Pipeline) -> Tuple[str, str, List[Image.Image]]:
-    """Preprocess the instruction, negative prompt, and input images."""
-    # Process instruction
-    instruction = [{"role": "user", "content": args.instruction}]
-    instruction = pipeline.tokenizer.apply_chat_template(instruction, tokenize=False, add_generation_prompt=False)
-    if "You are Qwen, created by Alibaba Cloud. You are a helpful assistant." in instruction:
-        instruction = instruction.replace("You are Qwen, created by Alibaba Cloud. You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
-    else:
-        instruction = instruction.replace("You are a helpful assistant.", "You are a helpful assistant that generates high-quality images based on user instructions.")
-
-    # Process negative prompt
-    negative_prompt = [{"role": "user", "content": args.negative_prompt}]
-    negative_prompt = pipeline.tokenizer.apply_chat_template(negative_prompt, tokenize=False, add_generation_prompt=False)
-
+def preprocess(input_image_path: List[str] = []) -> Tuple[str, str, List[Image.Image]]:
+    """Preprocess the input images."""
     # Process input images
     input_images = []
-    if args.input_image_path:
-        if len(args.input_image_path) == 1 and os.path.isdir(args.input_image_path[0]):
-            input_images = [Image.open(os.path.join(args.input_image_path[0], f)) 
-                          for f in os.listdir(args.input_image_path[0])]
-        else:
-            input_images = [Image.open(path) for path in args.input_image_path]
 
-    return instruction, negative_prompt, input_images
+    if input_image_path:
+        if isinstance(input_image_path, str):
+            input_image_path = [input_image_path]
+
+        if len(input_image_path) == 1 and os.path.isdir(input_image_path[0]):
+            input_images = [Image.open(os.path.join(input_image_path[0], f)) 
+                          for f in os.listdir(input_image_path[0])]
+        else:
+            input_images = [Image.open(path) for path in input_image_path]
+
+    for input_image in input_images:
+        input_image = resize_image(input_image, args.max_input_image_pixels, 16)
+
+    return input_images
 
 def run(args: argparse.Namespace, 
         accelerator: Accelerator, 
@@ -189,10 +192,10 @@ def main(args: argparse.Namespace, root_dir: str) -> None:
 
     # Load pipeline and process inputs
     pipeline = load_pipeline(args, accelerator, weight_dtype)
-    instruction, negative_prompt, input_images = preprocess(args, pipeline)
+    input_images = preprocess(args.input_image_path)
     
     # Generate and save image
-    output_image = run(args, accelerator, pipeline, instruction, negative_prompt, input_images)
+    output_image = run(args, accelerator, pipeline, args.instruction, args.negative_prompt, input_images)
     output_image.save(args.output_image_path)
     print(f"Image saved to {args.output_image_path}")
 

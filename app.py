@@ -21,7 +21,7 @@ from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
 from omnigen2.utils.img_util import resize_image
 
 # MODEL_PATH = "OmniGen2/OmniGen2-preview"
-MODEL_PATH = "/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe"
+MODEL_PATH = "/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe_model_fuse_v1"
 NEGATIVE_PROMPT = "(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar"
 # NEGATIVE_PROMPT = "low quality, blurry, out of focus, distorted, bad anatomy, poorly drawn, pixelated, grainy, artifacts, watermark, text, signature, deformed, extra limbs, cropped, jpeg artifacts, ugly"
 
@@ -140,32 +140,40 @@ def get_example():
             NEGATIVE_PROMPT,
             5.0,
             1,
+            1,
             1024,
             0,
         ],
         [
-            "A curly-haired man in a red shirt is drinking tea.",
+            "Replace the white toy airplane on the right with a wooden toy train.",
             1024,
             1024,
-            50,
-            None,
+            28,
+            "/share_2/luoxin/datasets/Distilled/flux_edit_pro/RefEdit/output_images/3220.png",
             None,
             None,
             NEGATIVE_PROMPT,
             5.0,
+            2.0,
             1,
             1024,
-            0,
+            998244353,
         ],
         
     ]
     return case
 
 
-def run_for_examples(instruction, width_input, height_input, num_inference_steps, image_input_1, image_input_2, image_input_3,
-        negative_prompt, guidance_scale_input, num_images_per_prompt):    
-    
-    return run(instruction, width_input, height_input, num_inference_steps, image_input_1, image_input_2, image_input_3, negative_prompt, guidance_scale_input, num_images_per_prompt)
+def run_for_examples(instruction,
+                     width_input, height_input,
+                     num_inference_steps,
+                     image_input_1, image_input_2, image_input_3,
+                     negative_prompt,
+                     text_guidance_scale_input, image_guidance_scale_input,
+                     num_images_per_prompt,
+                     max_input_image_size,
+                     seed_input):
+     return run(instruction, width_input, height_input, num_inference_steps, image_input_1, image_input_2, image_input_3, negative_prompt, text_guidance_scale_input, image_guidance_scale_input, num_images_per_prompt, max_input_image_size, seed_input)
 
 
 description = """
@@ -207,11 +215,11 @@ with gr.Blocks() as demo:
                 label="Width", minimum=256, maximum=1024, value=1024, step=128
             )
 
-            guidance_scale_input = gr.Slider(
-                label="Guidance Scale", minimum=1.0, maximum=8.0, value=5.0, step=0.1
+            text_guidance_scale_input = gr.Slider(
+                label="Text Guidance Scale", minimum=1.0, maximum=8.0, value=5.0, step=0.1
             )
 
-            img_guidance_scale_input = gr.Slider(
+            image_guidance_scale_input = gr.Slider(
                 label="img_guidance_scale", minimum=1.0, maximum=8.0, value=2.0, step=0.1
             )
 
@@ -221,10 +229,6 @@ with gr.Blocks() as demo:
 
             num_images_per_prompt = gr.Slider(
                 label="Number of images per prompt", minimum=1, maximum=4, value=1, step=1
-            )
-
-            time_shift_scale = gr.Slider(
-                label="time_shift_scale", minimum=1.0, maximum=5.0, value=3.0, step=0.1
             )
 
             # bf16 = gr.Checkbox(
@@ -276,8 +280,8 @@ with gr.Blocks() as demo:
             image_input_2, 
             image_input_3,
             negative_prompt, 
-            guidance_scale_input, 
-            img_guidance_scale_input,
+            text_guidance_scale_input, 
+            image_guidance_scale_input,
             num_images_per_prompt,
             max_input_image_size,
             seed_input,
@@ -297,7 +301,8 @@ with gr.Blocks() as demo:
             image_input_2, 
             image_input_3,
             negative_prompt, 
-            guidance_scale_input, 
+            text_guidance_scale_input, 
+            image_guidance_scale_input,
             num_images_per_prompt,
             max_input_image_size,
             seed_input,
@@ -315,7 +320,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # launch
-    demo.launch(share=args.share)
+    demo.launch(share=args.share,
+                allowed_paths=["/share_2",
+                               "/share"])
 
 """
 CUDA_VISIBLE_DEVICES=0 python shitao_app.py --share

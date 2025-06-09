@@ -65,7 +65,7 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
     def __init__(
         self,
         num_train_timesteps: int = 1000,
-        dynamic_time_shift: bool = False
+        dynamic_time_shift: bool = True
     ):
         timesteps = torch.linspace(0, 1, num_train_timesteps + 1, dtype=torch.float32)[:-1]
 

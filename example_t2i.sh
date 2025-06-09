@@ -9,14 +9,16 @@ cd $SHELL_FOLDER
 # --model_path OmniGen2/OmniGen2-preview \
 
 # model_path="/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe"
-model_path="OmniGen2/OmniGen2-preview"
+# model_path="OmniGen2/OmniGen2-preview"
+model_path="/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe_model_fuse_v1"
 
+# --instruction "A dog running in the park" \
 python inference.py \
 --model_path $model_path \
 --num_inference_step 28 \
 --height 1024 \
 --width 1024 \
 --text_guidance_scale 6.0 \
---instruction "A dog running in the park" \
+--instruction "A curly-haired man in a red shirt is drinking tea." \
 --output_image_path /share_2/luoxin/projects/OmniGen2/output_t2i.png \
 --num_images_per_prompt 3

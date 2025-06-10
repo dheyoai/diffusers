@@ -1,19 +1,18 @@
 <h1 align="center">OmniGen2</h1>
 
-
-<p align="center">
-    <a href="https://github.com/VectorSpaceLab/OmniGen2/tree/main">
-        <img alt="Build" src="https://img.shields.io/badge/Project%20Page-OmniGen-yellow">
-    </a>
-    <a href="">
-            <img alt="Build" src="https://img.shields.io/badge/arXiv%20paper-2409.11340-b31b1b.svg">
-    </a>
-    <a href="">
-        <img alt="License" src="https://img.shields.io/badge/HF%20Demo-🤗-lightblue">
-    </a>
-    <a href="">
-        <img alt="Build" src="https://img.shields.io/badge/HF%20Model-🤗-yellow">
-    </a>    
+<p align="center" style="text-decoration: none;">
+  <a href="https://github.com/VectorSpaceLab/OmniGen2">
+    <img src="https://img.shields.io/badge/Project%20Page-OmniGen2-yellow" alt="project page">
+  </a>
+  <a href="">
+    <img src="https://img.shields.io/badge/arXiv%20paper-2409.11340-b31b1b.svg" alt="arxiv">
+  </a>
+  <a href="">
+    <img src="https://img.shields.io/badge/HF%20Demo-🤗-lightblue" alt="demo">
+  </a>
+  <a href="">
+    <img src="https://img.shields.io/badge/HF%20Model-🤗-yellow" alt="model">
+  </a>
 </p>
 
 <h4 align="center">

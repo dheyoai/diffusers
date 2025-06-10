@@ -66,13 +66,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--text_guidance_scale",
         type=float,
-        default=1.0,
+        default=5.0,
         help="Text guidance scale."
     )
     parser.add_argument(
         "--image_guidance_scale",
         type=float,
-        default=1.0,
+        default=2.0,
         help="Image guidance scale."
     )
     parser.add_argument(

@@ -27,7 +27,82 @@
 ## 📌 TODO
 - [ ] Training data and scripts.
 
-## :rocket: Quick Start
+当然可以！下面是对你提供的 GitHub Page 中 Quick Start 部分进行的**重构版排版优化**，目标是更加清晰、结构分明、排版简洁、便于用户快速理解与操作：
+
+---
+
+## 🚀 Quick Start
+
+### 🛠️ Environment Setup
+
+#### ✅ Recommended Setup
+
+```bash
+# 1. Clone the repo
+git clone git@github.com:VectorSpaceLab/OmniGen2.git
+cd OmniGen2
+
+# 2. (Optional) Create a clean Python environment
+conda create -n omnigen2 python=3.11
+conda activate omnigen2
+
+# 3. Install dependencies
+# 3.1 Install PyTorch (choose correct CUDA version)
+pip install torch==2.6.0 torchvision --extra-index-url https://download.pytorch.org/whl/cu124
+
+# 3.2 Install other required packages
+pip install -r requirements.txt
+pip install flash-attn --no-build-isolation
+```
+
+#### 🌏 For users in Mainland China 🇨🇳
+
+```bash
+# Install PyTorch from a domestic mirror
+pip install torch==2.6.0 torchvision --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cu124
+
+# Install other dependencies from Tsinghua mirror
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install flash-attn --no-build-isolation -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+---
+
+### 🧪 Run Examples
+
+```bash
+# Text-to-image generation
+bash example_t2i.sh
+
+# Instruction-guided image editing
+bash example_edit.sh
+
+# Subject-driven image editing
+bash example_subject_driven_edit.sh
+```
+
+---
+
+### 🌐 Gradio Demo
+
+* **Online Demo**: [Available on Hugging Face Spaces 🚀](https://huggingface.co/spaces/Shitao/OmniGen2)
+
+* **Run Locally**:
+
+```bash
+pip install gradio
+python app.py
+# Optional: Share demo with public link
+python app.py --share
+```
+
+---
+
+### 📓 Jupyter Notebook
+
+Interactive example: `example.ipynb`
+
+<!-- ## :rocket: Quick Start
 
 - **Set up environment**
 <!-- Install via Github:
@@ -85,7 +160,7 @@ pip install -e .
     ```
 - **Jupyter Notebook**
 
-    see `example.ipynb`
+    see `example.ipynb` -->
 
 
 <!-- ## 2. Overview

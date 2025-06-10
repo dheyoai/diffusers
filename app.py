@@ -396,20 +396,20 @@ citation to be added
 
 # Gradio 
 with gr.Blocks() as demo:
-    gr.Markdown("# OmniGen v2: Unified Image Generation [paper](https://arxiv.org/abs/2409.11340) [code](https://github.com/VectorSpaceLab/OmniGen)")
+    gr.Markdown("# OmniGen2: Unified Image Generation [paper](https://arxiv.org/abs/2409.11340) [code](https://github.com/VectorSpaceLab/OmniGen2)")
     gr.Markdown(description)
     with gr.Row():
         with gr.Column():
             # text prompt
             instruction = gr.Textbox(
-                label="Enter your prompt, use <img><|image_i|></img> to represent i-th input image", placeholder="Type your prompt here..."
+                label='Enter your prompt. Use "first/second image" or “第一张图/第二张图” as reference.', placeholder="Type your prompt here..."
             )
 
             with gr.Row(equal_height=True):
                 # input images
-                image_input_1 = gr.Image(label="<img><|image_1|></img>", type="pil")
-                image_input_2 = gr.Image(label="<img><|image_2|></img>", type="pil")
-                image_input_3 = gr.Image(label="<img><|image_3|></img>", type="pil")
+                image_input_1 = gr.Image(label="First Image", type="pil")
+                image_input_2 = gr.Image(label="Second Image", type="pil")
+                image_input_3 = gr.Image(label="Third Image", type="pil")
             
             generate_button = gr.Button("Generate Image")
 
@@ -430,7 +430,7 @@ with gr.Blocks() as demo:
             )
 
             image_guidance_scale_input = gr.Slider(
-                label="img_guidance_scale", minimum=1.0, maximum=8.0, value=2.0, step=0.1
+                label="Image Guidance Scale", minimum=1.0, maximum=3.0, value=2.0, step=0.1
             )
 
             num_inference_steps = gr.Slider(
@@ -474,7 +474,7 @@ with gr.Blocks() as demo:
 
     bf16 = True
     accelerator = Accelerator(mixed_precision="bf16" if bf16 else 'no')
-    weight_dtype = torch.bfloat16 if bf16 else torch.float32    
+    weight_dtype = torch.bfloat16 if bf16 else torch.float32
 
     pipeline = load_pipeline(accelerator, weight_dtype)
 

@@ -20,75 +20,16 @@
 </h4>
 
 
-## 1. News
-- 2025-06-09:Gradio and Jupyter demo is available. 
-- 2025-06-09:🔥🔥 We release OmniGen2-preview, a multimodal generation model. 
+## 🔥 News
+- **2025-06-16**: Gradio and Jupyter demo is available.
+- **2025-06-16**: We release OmniGen2-preview, a multimodal generation model. 
 
+## 📌 TODO
+- [ ] Training data and scripts.
 
-## TODO
-- [ ] OmniGen2 checkpoint
-- [ ] OmniGen2 technical report
-- [ ] Trainging data and scripts
+## :rocket: Quick Start
 
-
-## Functions
-
-<h4 align="center">
-    <p>
-        <a href=#1-news>News</a> |
-        <a href=#3-methodology>Methodology</a> |
-        <a href=#4-what-can-omnigen-do>Capabilities</a> |
-        <a href=#5-quick-start>Quick Start</a> |
-        <a href="#6-finetune">Finetune</a> |
-        <a href="#license">License</a> |
-        <a href="#citation">Citation</a>
-    <p>
-</h4>
-
-## 1. News
-- 2025-06-09: We release OmniGen2-preview inference code and [model weights](https://huggingface.co/OmniGen2/OmniGen2-preview). 
-
-## 2. Todo
-- Training code
-- Technical Report
-
-## 2. Overview
-
-OmniGen is a unified image generation model that can generate a wide range of images from multi-modal prompts. It is designed to be simple, flexible, and easy to use. We provide [inference code](#5-quick-start) so that everyone can explore more functionalities of OmniGen.
-
-Existing image generation models often require loading several additional network modules (such as ControlNet, IP-Adapter, Reference-Net, etc.) and performing extra preprocessing steps (e.g., face detection, pose estimation, cropping, etc.) to generate a satisfactory image. However, **we believe that the future image generation paradigm should be more simple and flexible, that is, generating various images directly through arbitrarily multi-modal instructions without the need for additional plugins and operations, similar to how GPT works in language generation.** 
-
-Due to the limited resources, OmniGen still has room for improvement. We will continue to optimize it, and hope it inspires more universal image-generation models. You can also easily fine-tune OmniGen without worrying about designing networks for specific tasks; you just need to prepare the corresponding data, and then run the [script](#6-finetune). Imagination is no longer limited; everyone can construct any image-generation task, and perhaps we can achieve very interesting, wonderful, and creative things.
-
-If you have any questions, ideas, or interesting tasks you want OmniGen to accomplish, feel free to discuss with us: 2906698981@qq.com, wangyueze@tju.edu.cn, zhengliu1026@gmail.com. We welcome any feedback to help us improve the model.
-
-
-
-## 3. Methodology
-
-You can see details in our [paper](https://arxiv.org/abs/2409.11340). 
-
-
-
-## 4. What Can OmniGen do?
-
-OmniGen is a unified image generation model that you can use to perform various tasks, including but not limited to text-to-image generation, subject-driven generation, Identity-Preserving Generation, image editing, and image-conditioned generation. **OmniGen doesn't need additional plugins or operations, it can automatically identify the features (e.g., required object, human pose, depth mapping) in input images according to the text prompt.**
-We showcase some examples in [inference.ipynb](inference.ipynb). And in [inference_demo.ipynb](inference_demo.ipynb), we show an interesting pipeline to generate and modify an image.
-
-Here is the illustrations of OmniGen's capabilities: 
-- You can control the image generation flexibly via OmniGen
-![demo](./imgs/demo_cases.png)
-- Referring Expression Generation: You can input multiple images and use simple, general language to refer to the objects within those images. OmniGen can automatically recognize the necessary objects in each image and generate new images based on them. No additional operations, such as image cropping or face detection, are required.
-![demo](./imgs/referring.png)
-
-If you are not entirely satisfied with certain functionalities or wish to add new capabilities, you can try [fine-tuning OmniGen](#6-finetune).
-
-
-
-## 5. Quick Start
-
-
-### Using OmniGen2
+- Set up environment
 <!-- Install via Github:
 ```bash
 git clone https://github.com/VectorSpaceLab/OmniGen.git
@@ -98,20 +39,24 @@ pip install -e .
 
 <!-- You also can create a new environment to avoid conflicts: -->
 ```bash
-# Create virtual environment (Optional)
+# 1. Download our repo
+git clone git@github.com:VectorSpaceLab/OmniGen2.git
+cd OmniGen2
+# 2. Create virtual environment (Optional)
 conda create -n omnigen2 python=3.11
 conda activate omnigen2
 
-# Install dependencies
-# Install pytorch with your CUDA version, e.g.
+# 3. Install dependencies
+# 3.1 Install pytorch with your CUDA version, e.g.
 pip install torch==2.6.0 torchvision --extra-index-url https://download.pytorch.org/whl/cu124
-# Install other packages
+# 3.2 Install other packages
 pip install -r requirements.txt
 pip install flash-attn --no-build-isolation
 
-# 如果你是来自中国大陆的用户，可以使用下面的命令从国内源进行安装。
+# 3. 如果你是来自中国大陆的用户，可以使用下面的命令从国内源进行安装。
+# 3.1 根据你的CUDA版本安装pytorch
 pip install torch==2.6.0 torchvision --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cu124
-# 安装其他依赖
+# 3.1 安装其他依赖
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 pip install flash-attn --no-build-isolation -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
@@ -187,6 +132,41 @@ To use with Google Colab, please use the following command:
 !pip install gradio spaces
 !python app.py --share
 ```
+
+<!-- ## 2. Overview
+
+OmniGen is a unified image generation model that can generate a wide range of images from multi-modal prompts. It is designed to be simple, flexible, and easy to use. We provide [inference code](#5-quick-start) so that everyone can explore more functionalities of OmniGen.
+
+Existing image generation models often require loading several additional network modules (such as ControlNet, IP-Adapter, Reference-Net, etc.) and performing extra preprocessing steps (e.g., face detection, pose estimation, cropping, etc.) to generate a satisfactory image. However, **we believe that the future image generation paradigm should be more simple and flexible, that is, generating various images directly through arbitrarily multi-modal instructions without the need for additional plugins and operations, similar to how GPT works in language generation.** 
+
+Due to the limited resources, OmniGen still has room for improvement. We will continue to optimize it, and hope it inspires more universal image-generation models. You can also easily fine-tune OmniGen without worrying about designing networks for specific tasks; you just need to prepare the corresponding data, and then run the [script](#6-finetune). Imagination is no longer limited; everyone can construct any image-generation task, and perhaps we can achieve very interesting, wonderful, and creative things.
+
+If you have any questions, ideas, or interesting tasks you want OmniGen to accomplish, feel free to discuss with us: 2906698981@qq.com, wangyueze@tju.edu.cn, zhengliu1026@gmail.com. We welcome any feedback to help us improve the model.
+
+
+
+## 3. Methodology
+
+You can see details in our [paper](https://arxiv.org/abs/2409.11340). 
+
+
+
+## 4. What Can OmniGen do?
+
+OmniGen is a unified image generation model that you can use to perform various tasks, including but not limited to text-to-image generation, subject-driven generation, Identity-Preserving Generation, image editing, and image-conditioned generation. **OmniGen doesn't need additional plugins or operations, it can automatically identify the features (e.g., required object, human pose, depth mapping) in input images according to the text prompt.**
+We showcase some examples in [inference.ipynb](inference.ipynb). And in [inference_demo.ipynb](inference_demo.ipynb), we show an interesting pipeline to generate and modify an image.
+
+Here is the illustrations of OmniGen's capabilities: 
+- You can control the image generation flexibly via OmniGen
+![demo](./imgs/demo_cases.png)
+- Referring Expression Generation: You can input multiple images and use simple, general language to refer to the objects within those images. OmniGen can automatically recognize the necessary objects in each image and generate new images based on them. No additional operations, such as image cropping or face detection, are required.
+![demo](./imgs/referring.png)
+
+If you are not entirely satisfied with certain functionalities or wish to add new capabilities, you can try [fine-tuning OmniGen](#6-finetune).
+
+
+ -->
+
 
 ## 6. Finetune
 We provide a training script `train.py` to fine-tune OmniGen. 

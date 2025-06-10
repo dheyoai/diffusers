@@ -38,53 +38,54 @@ pip install -e .
 ``` -->
 
 <!-- You also can create a new environment to avoid conflicts: -->
-```bash
-# 1. Download our repo
-git clone git@github.com:VectorSpaceLab/OmniGen2.git
-cd OmniGen2
+    ```bash
+    # 1. Download our repo
+    git clone git@github.com:VectorSpaceLab/OmniGen2.git
+    cd OmniGen2
 
-# 2. Create virtual environment (Optional)
-conda create -n omnigen2 python=3.11
-conda activate omnigen2
+    # 2. Create virtual environment (Optional)
+    conda create -n omnigen2 python=3.11
+    conda activate omnigen2
 
-# 3. Install dependencies
-# 3.1 Install pytorch with your CUDA version, e.g.
-pip install torch==2.6.0 torchvision --extra-index-url https://download.pytorch.org/whl/cu124
-# 3.2 Install other packages
-pip install -r requirements.txt
-pip install flash-attn --no-build-isolation
+    # 3. Install dependencies
+    # 3.1 Install pytorch with your CUDA version, e.g.
+    pip install torch==2.6.0 torchvision --extra-index-url https://download.pytorch.org/whl/cu124
+    # 3.2 Install other packages
+    pip install -r requirements.txt
+    pip install flash-attn --no-build-isolation
 
-# 3. 如果你是来自中国大陆的用户，可以使用下面的命令从国内源进行安装。
-# 3.1 根据你的CUDA版本安装pytorch
-pip install torch==2.6.0 torchvision --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cu124
-# 3.1 安装其他依赖
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-pip install flash-attn --no-build-isolation -i https://pypi.tuna.tsinghua.edu.cn/simple
-```
+    # 3. 如果你是来自中国大陆的用户，可以使用下面的命令从国内源进行安装。
+    # 3.1 根据你的CUDA版本安装pytorch
+    pip install torch==2.6.0 torchvision --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cu124
+    # 3.1 安装其他依赖
+    pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+    pip install flash-attn --no-build-isolation -i https://pypi.tuna.tsinghua.edu.cn/simple
+    ```
 
 - **Try OmniGen2 with following examples**:
-```shell
-# text-to-image generation
-bash example_t2i.sh
-# instruction-guided image editing
-bash example_edit.sh
-# subject-driven image editing
-bash example_subject_driven_edit.sh
-```
+    ```shell
+    # text-to-image generation
+    bash example_t2i.sh
+    # instruction-guided image editing
+    bash example_edit.sh
+    # subject-driven image editing
+    bash example_subject_driven_edit.sh
+    ```
 
 - **Gradio**
-We construct an online demo in [Huggingface](https://huggingface.co/spaces/Shitao/OmniGen2).
 
-For the local gradio demo, you need to install `pip install gradio spaces`, and then you can run:
-```shell
-pip install gradio
-python app.py
-# or using share flag if you want to create a share link
-python app.py --share
-```
+    We construct an online demo in [Huggingface](https://huggingface.co/spaces/Shitao/OmniGen2).
+
+    For the local gradio demo, you need to install `pip install gradio spaces`, and then you can run:
+    ```shell
+    pip install gradio
+    python app.py
+    # or using share flag if you want to create a share link
+    python app.py --share
+    ```
 - **Jupyter Notebook**
 
-see `example.ipynb`
+    see `example.ipynb`
 
 
 <!-- ## 2. Overview

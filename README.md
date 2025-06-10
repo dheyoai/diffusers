@@ -92,7 +92,7 @@ python app.py
 python app.py --share
 ```
 
-## Usage Tips
+## 💡 Usage Tips
 To achieve optimal results with OmniGen2, you can adjust the following key hyperparameters based on your specific use case.
 - `num_inference_step`: The number of sampling steps per generation. Higher values generally improve quality but increase generation time.
     - Recommended Range: 28 to 50

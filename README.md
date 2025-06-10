@@ -27,10 +27,6 @@
 ## 📌 TODO
 - [ ] Training data and scripts.
 
-当然可以！下面是对你提供的 GitHub Page 中 Quick Start 部分进行的**重构版排版优化**，目标是更加清晰、结构分明、排版简洁、便于用户快速理解与操作：
-
----
-
 ## 🚀 Quick Start
 
 ### 🛠️ Environment Setup
@@ -95,6 +91,20 @@ python app.py
 # Optional: Share demo with public link
 python app.py --share
 ```
+
+## Usage Tips
+To achieve optimal results with OmniGen2, you can adjust the following key hyperparameters based on your specific use case.
+- `num_inference_step`: The number of sampling steps per generation. Higher values generally improve quality but increase generation time.
+    - Recommended Range: 28 to 50
+- `text_guidance_scale`: Controls how strictly the output adheres to the text prompt (Classifier-Free Guidance).
+    - *For Text-to-Image*: Use a higher value (e.g., 6-7) for simple or less detailed prompts. Use a lower value (e.g., 4) for complex and highly detailed prompts.
+    - *For Editing/Composition*: A moderate value around 4-5 is recommended.
+- `image_guidance_scale`: Controls the influence of the reference image. A higher value increases consistency with the reference image but may reduce adherence to the text prompt.
+    - Recommended Range: 1.5 to 2.0
+- `max_input_image_pixels`: To manage processing speed and memory consumption, reference images exceeding this total pixel count will be automatically resized.
+- `negative_prompt`: Tell the model what you don't want to see in the image.
+    - Example: blurry, low quality, text, watermark
+    - Tip: For the best results, try experimenting with different negative prompts. If you're not sure, just leave it blank.
 
 ## :heart: Citing Us
 If you find this repository or our work useful, please consider giving a star :star: and citation :t-rex:, which would be greatly appreciated:

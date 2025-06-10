@@ -489,6 +489,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
         verbose: bool = False,
+        step_func=None,
     ):
         
         height = height or self.default_sample_size * self.vae_scale_factor
@@ -597,7 +598,8 @@ class OmniGen2Pipeline(DiffusionPipeline):
             timesteps=timesteps,
             device=device,
             dtype=dtype,
-            verbose=verbose
+            verbose=verbose,
+            step_func=step_func,
         )
 
         image = F.interpolate(image, size=(ori_height, ori_width), mode='bilinear')
@@ -625,7 +627,8 @@ class OmniGen2Pipeline(DiffusionPipeline):
         timesteps,
         device,
         dtype,
-        verbose
+        verbose,
+        step_func=None
     ):
         self.set_progress_bar_config(disable=not verbose)
 
@@ -693,6 +696,9 @@ class OmniGen2Pipeline(DiffusionPipeline):
 
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
+                
+                if step_func is not None:
+                    step_func(i, self._num_timesteps)
 
         latents = latents.to(dtype=dtype)
         if self.vae.config.scaling_factor is not None:

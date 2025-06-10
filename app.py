@@ -68,7 +68,7 @@ def load_pipeline(accelerator, weight_dtype):
     return pipeline
 
 def run(instruction, width_input, height_input, num_inference_steps, image_input_1, image_input_2, image_input_3,
-        negative_prompt, guidance_scale_input, img_guidance_scale_input,  num_images_per_prompt, max_input_image_size, seed_input):
+        negative_prompt, guidance_scale_input, img_guidance_scale_input,  num_images_per_prompt, max_input_image_size, seed_input, progress=gr.Progress()):
 
     input_images = [image_input_1, image_input_2, image_input_3]
     input_images = [img for img in input_images if img is not None]
@@ -84,6 +84,10 @@ def run(instruction, width_input, height_input, num_inference_steps, image_input
         seed_input = random.randint(0, 2**16-1)
     generator = torch.Generator(device=accelerator.device).manual_seed(seed_input)
 
+    def progress_callback(cur_step, timesteps):
+        frac = (cur_step + 1) / float(timesteps)
+        progress(frac)
+
     results = pipeline(
         prompt=instruction,
         input_images=input_images,
@@ -97,7 +101,10 @@ def run(instruction, width_input, height_input, num_inference_steps, image_input
         num_images_per_prompt=num_images_per_prompt,
         generator=generator,
         output_type="pil",
+        step_func=progress_callback,
     )
+
+    progress(1.0)
     
     vis_images = [to_tensor(image) * 2 - 1 for image in results.images]
 
@@ -263,7 +270,7 @@ def get_example():
             1,
             1024,
             998244353,
-        ]
+        ],
         [
             "Remove the bird",
             1024,

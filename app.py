@@ -25,40 +25,6 @@ MODEL_PATH = "/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe_
 NEGATIVE_PROMPT = "(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar"
 # NEGATIVE_PROMPT = "low quality, blurry, out of focus, distorted, bad anatomy, poorly drawn, pixelated, grainy, artifacts, watermark, text, signature, deformed, extra limbs, cropped, jpeg artifacts, ugly"
 
-def crop_arr(pil_image, max_image_size, img_scale_num):
-    """
-    Center cropping implementation from ADM.
-    https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
-    """
-    while min(*pil_image.size) >= 2 * max_image_size:
-        pil_image = pil_image.resize(
-            tuple(x // 2 for x in pil_image.size), resample=Image.BOX
-        )
-
-    if max(*pil_image.size) > max_image_size:
-        scale = max_image_size / max(*pil_image.size)
-        pil_image = pil_image.resize(
-            tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
-        )
-    
-    if min(*pil_image.size) < img_scale_num:
-        scale = img_scale_num / min(*pil_image.size)
-        pil_image = pil_image.resize(
-            tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
-        )
-    
-    arr = np.array(pil_image)
-    crop_y1 = (arr.shape[0] % img_scale_num) // 2
-    crop_y2 = arr.shape[0] % img_scale_num - crop_y1
-
-    crop_x1 = (arr.shape[1] % img_scale_num) // 2
-    crop_x2 = arr.shape[1] % img_scale_num - crop_x1
-
-    arr = arr[crop_y1:arr.shape[0]-crop_y2, crop_x1:arr.shape[1]-crop_x2]
-    
-    return Image.fromarray(arr)
-
-
 def load_pipeline(accelerator, weight_dtype):
     pipeline = OmniGen2Pipeline.from_pretrained(MODEL_PATH,
                                                 torch_dtype=weight_dtype,
@@ -315,7 +281,7 @@ def get_example():
             1,
             1024,
             998244353,
-        ],      
+        ],
         
     ]
     return case
@@ -474,10 +440,12 @@ with gr.Blocks() as demo:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the OmniGen')
     parser.add_argument('--share', action='store_true', help='Share the Gradio app')
+    parser.add_argument('--port', type=int, default=7860, help='Port to use for the Gradio app')
     args = parser.parse_args()
 
     # launch
     demo.launch(share=args.share,
+                server_port=args.port,
                 allowed_paths=["/share_2",
                                "/share"])
 

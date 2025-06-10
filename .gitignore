@@ -214,3 +214,5 @@ omnigen2/utils/vpn_utils.py
 
 test_tokenizer.py
 save_pipeline.py
+app.sh
+logs/

@@ -29,7 +29,7 @@
 
 ## :rocket: Quick Start
 
-- Set up environment
+- **Set up environment**
 <!-- Install via Github:
 ```bash
 git clone https://github.com/VectorSpaceLab/OmniGen.git
@@ -42,6 +42,7 @@ pip install -e .
 # 1. Download our repo
 git clone git@github.com:VectorSpaceLab/OmniGen2.git
 cd OmniGen2
+
 # 2. Create virtual environment (Optional)
 conda create -n omnigen2 python=3.11
 conda activate omnigen2
@@ -61,7 +62,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 pip install flash-attn --no-build-isolation -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-Try OmniGen2 with following examples:
+- **Try OmniGen2 with following examples**:
 ```shell
 # text-to-image generation
 bash example_t2i.sh
@@ -71,67 +72,20 @@ bash example_edit.sh
 bash example_subject_driven_edit.sh
 ```
 
-Here are some examples:
-```python
-from OmniGen import OmniGenPipeline
-
-pipe = OmniGenPipeline.from_pretrained("Shitao/OmniGen-v1")  
-# Note: Your local model path is also acceptable, such as 'pipe = OmniGenPipeline.from_pretrained(your_local_model_path)', where all files in your_local_model_path should be organized as https://huggingface.co/Shitao/OmniGen-v1/tree/main
-
-## Text to Image
-images = pipe(
-    prompt="A curly-haired man in a red shirt is drinking tea.", 
-    height=1024, 
-    width=1024, 
-    guidance_scale=2.5,
-    seed=0,
-)
-images[0].save("example_t2i.png")  # save output PIL Image
-
-## Multi-modal to Image
-# In the prompt, we use the placeholder to represent the image. The image placeholder should be in the format of <img><|image_*|></img>
-# You can add multiple images in the input_images. Please ensure that each image has its placeholder. For example, for the list input_images [img1_path, img2_path], the prompt needs to have two placeholders: <img><|image_1|></img>, <img><|image_2|></img>.
-images = pipe(
-    prompt="A man in a black shirt is reading a book. The man is the right man in <img><|image_1|></img>.",
-    input_images=["./imgs/test_cases/two_man.jpg"],
-    height=1024, 
-    width=1024,
-    guidance_scale=2.5, 
-    img_guidance_scale=1.6,
-    seed=0
-)
-images[0].save("example_ti2i.png")  # save output PIL image
-```
-- If out of memory, you can set `offload_model=True`. If the inference time is too long when inputting multiple images, you can reduce the `max_input_image_size`.  For the required resources and the method to run OmniGen efficiently, please refer to [docs/inference.md#requiremented-resources](docs/inference.md#requiremented-resources).
-- For more examples of image generation, you can refer to [inference.ipynb](inference.ipynb) and [inference_demo.ipynb](inference_demo.ipynb)
-- For more details about the argument in inference, please refer to [docs/inference.md](docs/inference.md). 
-
-
-### Using Diffusers
-
-[Diffusers docs](https://huggingface.co/docs/diffusers/main/en/using-diffusers/omnigen)
-
-
-### Gradio Demo
-
-We construct an online demo in [Huggingface](https://huggingface.co/spaces/Shitao/OmniGen).
+- **Gradio**
+We construct an online demo in [Huggingface](https://huggingface.co/spaces/Shitao/OmniGen2).
 
 For the local gradio demo, you need to install `pip install gradio spaces`, and then you can run:
-```python
-pip install gradio spaces
+```shell
+pip install gradio
 python app.py
+# or using share flag if you want to create a share link
+python app.py --share
 ```
+- **Jupyter Notebook**
 
-#### Use Google Colab
-To use with Google Colab, please use the following command:
+see `example.ipynb`
 
-```
-!git clone https://github.com/VectorSpaceLab/OmniGen.git
-%cd OmniGen
-!pip install -e .
-!pip install gradio spaces
-!python app.py --share
-```
 
 <!-- ## 2. Overview
 
@@ -166,27 +120,14 @@ If you are not entirely satisfied with certain functionalities or wish to add ne
 
 
  -->
+## :heart: Citing Us
+If you find this repository or our work useful, please consider giving a star :star: and citation :t-rex:, which would be greatly appreciated:
 
-
-## 6. Finetune
-We provide a training script `train.py` to fine-tune OmniGen. 
-Here is a toy example about LoRA finetune:
-```bash
-accelerate launch --num_processes=1 train.py \
-    --model_name_or_path Shitao/OmniGen-v1 \
-    --batch_size_per_device 2 \
-    --condition_dropout_prob 0.01 \
-    --lr 1e-3 \
-    --use_lora \
-    --lora_rank 8 \
-    --json_file ./toy_data/toy_subject_data.jsonl \
-    --image_path ./toy_data/images \
-    --max_input_length_limit 18000 \
-    --keep_raw_resolution \
-    --max_image_size 1024 \
-    --gradient_accumulation_steps 1 \
-    --ckpt_every 10 \
-    --epochs 200 \
-    --log_every 1 \
-    --results_dir ./results/toy_finetune_lora
+```bibtex
+@article{xiao2024omnigen,
+  title={Omnigen: Unified image generation},
+  author={Xiao, Shitao and Wang, Yueze and Zhou, Junjie and Yuan, Huaying and Xing, Xingrun and Yan, Ruiran and Wang, Shuting and Huang, Tiejun and Liu, Zheng},
+  journal={arXiv preprint arXiv:2409.11340},
+  year={2024}
+}
 ```

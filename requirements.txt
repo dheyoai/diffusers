@@ -9,7 +9,6 @@ opencv-python-headless
 scipy
 wandb
 matplotlib
-gradio
 Pillow
 tqdm
 omegaconf

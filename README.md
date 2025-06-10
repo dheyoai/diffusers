@@ -102,18 +102,7 @@ python app.py --share
 
 Interactive example: `example.ipynb`
 
-<!-- ## :rocket: Quick Start
-
-- **Set up environment**
-<!-- Install via Github:
-```bash
-git clone https://github.com/VectorSpaceLab/OmniGen.git
-cd OmniGen
-pip install -e .
-``` -->
-
-<!-- You also can create a new environment to avoid conflicts: -->
-    ```bash
+    ```shell
     # 1. Download our repo
     git clone git@github.com:VectorSpaceLab/OmniGen2.git
     cd OmniGen2

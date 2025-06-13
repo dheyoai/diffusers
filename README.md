@@ -26,6 +26,7 @@
 
 ## 📌 TODO
 - [ ] Training data and scripts.
+- [ ] ComfyUI and Replicate Demo~(commuity support will be appreciated!).
 
 ## 🚀 Quick Start
 
@@ -107,6 +108,11 @@ To achieve optimal results with OmniGen2, you can adjust the following key hyper
     - **Example**: blurry, low quality, text, watermark
     - **Tip**: For the best results, try experimenting with different negative prompts. If you're not sure, just leave it blank.
 
+## Resources Requirement
+OmniGen2 require around 21G GPU memory for BF16 inference. For users do not have such GPU memory, may try:
+
+
+
 ## :heart: Citing Us
 If you find this repository or our work useful, please consider giving a star :star: and citation :t-rex:, which would be greatly appreciated:
 
@@ -118,3 +124,6 @@ If you find this repository or our work useful, please consider giving a star :s
   year={2024}
 }
 ```
+
+## License
+This work is licensed under Apache 2.0 license.

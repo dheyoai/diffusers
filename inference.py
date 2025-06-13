@@ -13,9 +13,16 @@ from torchvision.transforms.functional import to_pil_image, to_tensor
 
 from accelerate import Accelerator
 
+from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+# from omnigen2.pipelines.omnigen2.pipeline_omnigen2_chat import OmniGen2ChatPipeline
+# from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
 from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
 from omnigen2.utils.img_util import resize_image
 
+
+print(f"{os.environ['HF_TOKEN']=}")
+print(f"{os.environ['HF_ENDPOINT']=}")
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
@@ -109,19 +116,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dtype: torch.dtype) -> OmniGen2Pipeline:
-    pipeline = OmniGen2Pipeline.from_pretrained(args.model_path,
-                                                torch_dtype=weight_dtype,
-                                                trust_remote_code=True,
-                                                token=os.getenv("HF_TOKEN"))
+    pipeline = OmniGen2Pipeline.from_pretrained(
+        args.model_path,
+        torch_dtype=weight_dtype,
+        trust_remote_code=True,
+        token=os.getenv("HF_TOKEN"),
+    )
     pipeline = pipeline.to(accelerator.device, dtype=weight_dtype)
     return pipeline
 
 def preprocess(input_image_path: List[str] = []) -> Tuple[str, str, List[Image.Image]]:
     """Preprocess the input images."""
     # Process input images
-    input_images = []
+    input_images = None
 
     if input_image_path:
+        input_images = []
         if isinstance(input_image_path, str):
             input_image_path = [input_image_path]
 
@@ -131,8 +141,8 @@ def preprocess(input_image_path: List[str] = []) -> Tuple[str, str, List[Image.I
         else:
             input_images = [Image.open(path) for path in input_image_path]
 
-    for input_image in input_images:
-        input_image = resize_image(input_image, args.max_input_image_pixels, 16)
+        for input_image in input_images:
+            input_image = resize_image(input_image, args.max_input_image_pixels, 16)
 
     return input_images
 
@@ -159,10 +169,7 @@ def run(args: argparse.Namespace,
         generator=generator,
         output_type="pil",
     )
-    
-    vis_images = [to_tensor(image) * 2 - 1 for image in results.images]
-    output_image = create_collage(vis_images)
-    return output_image
+    return results
 
 def create_collage(images: List[torch.Tensor]) -> Image.Image:
     """Create a horizontal collage from a list of images."""
@@ -193,11 +200,17 @@ def main(args: argparse.Namespace, root_dir: str) -> None:
     # Load pipeline and process inputs
     pipeline = load_pipeline(args, accelerator, weight_dtype)
     input_images = preprocess(args.input_image_path)
-    
+
     # Generate and save image
-    output_image = run(args, accelerator, pipeline, args.instruction, args.negative_prompt, input_images)
-    output_image.save(args.output_image_path)
-    print(f"Image saved to {args.output_image_path}")
+    results = run(args, accelerator, pipeline, args.instruction, args.negative_prompt, input_images)
+    print(f"{results=}", flush=True)
+    if results['images'] is not None:
+        vis_images = [to_tensor(image) * 2 - 1 for image in results['images']]
+        output_image = create_collage(vis_images)
+        output_image.save(args.output_image_path)
+        print(f"Image saved to {args.output_image_path}")
+
+    print(f"Text: {results['text']=}", flush=True)
 
 if __name__ == "__main__":
     root_dir = os.path.abspath(os.path.join(__file__, os.path.pardir))

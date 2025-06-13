@@ -7,11 +7,14 @@ conda activate py3.11+pytorch2.6+cu124
 
 # model_path="OmniGen2/OmniGen2-preview"
 # model_path="/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe"
-model_path="/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe_model_fuse_v1"
+# model_path="/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe_model_fuse_v1"
+model_path="/share_2/luoxin/projects/OmniGen2/pretrained_models/omnigen2_pipe_model_fuse_v17_chat"
+
+pip install transformers==4.51.3 -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 python inference.py \
 --model_path $model_path \
---num_inference_step 28 \
+--num_inference_step 50 \
 --height 1024 \
 --width 1024 \
 --text_guidance_scale 5.0 \

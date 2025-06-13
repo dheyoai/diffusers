@@ -26,9 +26,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from transformers import Qwen2_5_VLModel, Qwen2Tokenizer, Qwen2TokenizerFast
+from transformers import Qwen2_5_VLForConditionalGeneration
 
-from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
+# from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
+from omnigen2.pipelines.image_processor import OmniGen2ImageProcessor
 from diffusers.models.autoencoders import AutoencoderKL
 from ...models.transformers import OmniGen2Transformer2DModel
 from ...models.transformers.repo import OmniGen2RotaryPosEmbed
@@ -57,7 +58,7 @@ else:
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 @dataclass
-class FMPipelineOutput(BaseOutput):
+class OmniGen2PipelineOutput(BaseOutput):
     """
     Output class for OmniGen2 pipeline.
 
@@ -66,6 +67,7 @@ class FMPipelineOutput(BaseOutput):
             List of denoised PIL images of length `batch_size` or numpy array of shape 
             `(batch_size, height, width, num_channels)`. Contains the generated images.
     """
+    text: str
     images: Union[List[PIL.Image.Image], np.ndarray]
 
 
@@ -139,8 +141,8 @@ class OmniGen2Pipeline(DiffusionPipeline):
         transformer: OmniGen2Transformer2DModel,
         vae: AutoencoderKL,
         scheduler: FlowMatchEulerDiscreteScheduler,
-        text_encoder: Qwen2_5_VLModel,
-        tokenizer: Union[Qwen2Tokenizer, Qwen2TokenizerFast],
+        mllm: Qwen2_5_VLForConditionalGeneration,
+        mllm_processor,
     ) -> None:
         """
         Initialize the OmniGen2 pipeline.
@@ -158,13 +160,13 @@ class OmniGen2Pipeline(DiffusionPipeline):
             transformer=transformer,
             vae=vae,
             scheduler=scheduler,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer
+            mllm=mllm,
+            mllm_processor=mllm_processor
         )
         self.vae_scale_factor = (
             2 ** (len(self.vae.config.block_out_channels) - 1) if hasattr(self, "vae") and self.vae is not None else 8
         )
-        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor, do_resize=False)
+        self.image_processor = OmniGen2ImageProcessor(vae_scale_factor=self.vae_scale_factor, do_resize=True)
         self.default_sample_size = 64
 
     def prepare_latents(
@@ -228,6 +230,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
         images: Union[List[PIL.Image.Image], PIL.Image.Image],
         batch_size: int,
         num_images_per_prompt: int,
+        max_pixels: int,
         device: torch.device,
         dtype: torch.dtype,
     ) -> List[Optional[torch.FloatTensor]]:
@@ -251,7 +254,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
             if img is not None and len(img) > 0:
                 ref_latents = []
                 for j, img_j in enumerate(img):
-                    img_j = self.image_processor.preprocess(img_j)
+                    img_j = self.image_processor.preprocess(img_j, max_pixels=max_pixels)
                     ref_latents.append(self.encode_vae(img_j.to(device=device)).squeeze(0))
             else:
                 ref_latents = None
@@ -329,20 +332,83 @@ class OmniGen2Pipeline(DiffusionPipeline):
 
         return prompt_embeds, prompt_attention_mask
     
-    def _apply_chat_template(self, prompt: str):
-        prompt = [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant that generates high-quality images based on user instructions.",
-            },
-            {"role": "user", "content": prompt},
-        ]
-        prompt = self.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=False)
+    def _apply_chat_template(self, prompt: str, images: List = None):
+        if images is not None:
+            prompt += "".join(
+                [
+                    f"<img{i}>: <|vision_start|><|image_pad|><|vision_end|>"
+                    for i in range(1, len(images) + 1)
+                ]
+            )
+        prompt = f"<|im_start|>system\nYou are a helpful assistant that generates high-quality images based on user instructions.<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
         return prompt
+    
+    def _get_qwen2_prompt_embeds(
+        self, 
+        prompt: Union[str, List[str]],
+        input_images = None, 
+        device: Optional[torch.device] = None,
+        use_only_text_hidden_states: bool = True,
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get prompt embeddings from the Qwen2 text encoder.
+
+        Args:
+            prompt: The prompt or list of prompts to encode.
+            device: The device to place the embeddings on. If None, uses the pipeline's device.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+                - The prompt embeddings tensor
+                - The attention mask tensor
+
+        Raises:
+            Warning: If the input text is truncated due to sequence length limitations.
+        """
+        device = device or self._execution_device
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+
+        inputs = self.mllm_processor(
+            text=prompt,
+            images=input_images,
+            videos=None,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(device)
+
+        prompt_embeds = self.mllm(
+            **inputs,
+            output_hidden_states=True,
+        ).hidden_states[-1]
+
+        text_input_ids = inputs.input_ids
+        text_mask = inputs.attention_mask
+        if use_only_text_hidden_states:
+            mask = text_input_ids != self.mllm.config.image_token_id
+            mask = mask & text_mask
+            mask = mask.bool()
+            
+            text_l = mask.sum(dim=-1)
+            max_l = text_l.max()
+            text_batch_size = prompt_embeds.size(0)
+            new_prompt_embeds = torch.zeros((text_batch_size, max_l, prompt_embeds.size(-1)), device=prompt_embeds.device, dtype=prompt_embeds.dtype)
+            new_text_mask = torch.zeros((text_batch_size, max_l), dtype=text_mask.dtype, device=text_mask.device)
+            for i in range(text_batch_size):
+                new_prompt_embeds[i, :text_l[i]] = prompt_embeds[i, mask[i]]
+                new_text_mask[i, :text_l[i]] = 1
+
+            prompt_embeds = new_prompt_embeds
+            text_mask = new_text_mask
+
+        prompt_embeds = prompt_embeds.to(dtype=self.mllm.dtype, device=device)
+        return prompt_embeds, text_mask
+
 
     def encode_prompt(
         self,
         prompt: Union[str, List[str]],
+        input_images: Optional[Union[str, List[str]]] = None,
         do_classifier_free_guidance: bool = True,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: int = 1,
@@ -381,18 +447,17 @@ class OmniGen2Pipeline(DiffusionPipeline):
         device = device or self._execution_device
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
-        prompt = [self._apply_chat_template(_prompt) for _prompt in prompt]
 
         if prompt is not None:
             batch_size = len(prompt)
         else:
             batch_size = prompt_embeds.shape[0]
+        print(prompt)
         if prompt_embeds is None:
             prompt_embeds, prompt_attention_mask = self._get_qwen2_prompt_embeds(
                 prompt=prompt,
+                input_images=input_images,
                 device=device,
-                max_sequence_length=max_sequence_length,
-                use_text_encoder_penultimate_layer_feats=use_text_encoder_penultimate_layer_feats
             )
 
         batch_size, seq_len, _ = prompt_embeds.shape
@@ -403,6 +468,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
         prompt_attention_mask = prompt_attention_mask.view(batch_size * num_images_per_prompt, -1)
 
         # Get negative embeddings for classifier free guidance
+        negative_prompt_embeds, negative_prompt_attention_mask = None, None
         if do_classifier_free_guidance and negative_prompt_embeds is None:
             negative_prompt = negative_prompt if negative_prompt is not None else ""
 
@@ -426,8 +492,6 @@ class OmniGen2Pipeline(DiffusionPipeline):
             negative_prompt_embeds, negative_prompt_attention_mask = self._get_qwen2_prompt_embeds(
                 prompt=negative_prompt,
                 device=device,
-                max_sequence_length=max_sequence_length,
-                use_text_encoder_penultimate_layer_feats=use_text_encoder_penultimate_layer_feats
             )
 
             batch_size, seq_len, _ = negative_prompt_embeds.shape
@@ -461,8 +525,48 @@ class OmniGen2Pipeline(DiffusionPipeline):
     def image_guidance_scale(self):
         return self._image_guidance_scale
     
+    def prepare_inputs_for_text_generation(self, prompts, input_images, device):
+        print(f"{prompts=}", flush=True)
+        if isinstance(prompts, str):
+            prompts = [prompts]
+
+        ori_padding_side = self.mllm_processor.tokenizer.padding_side
+        self.mllm_processor.tokenizer.padding_side = "left"
+        inputs = self.mllm_processor(
+            text=prompts,
+            images=input_images,
+            videos=None,
+            padding=True,
+            return_tensors="pt",
+        ).to(device)
+        self.mllm_processor.tokenizer.padding_side = ori_padding_side
+        return inputs
+
+    def generate_text(self, prompt, input_images):
+        inputs = self.prepare_inputs_for_text_generation(
+            prompt, input_images, self.mllm.device
+        )
+        generated_ids = self.mllm.generate(
+            **inputs,
+            tokenizer=self.mllm_processor.tokenizer,
+            max_new_tokens=256,
+            stop_strings=["<|im_end|>", "<|img|>", "<|endoftext|>"],
+        )  # stop_words=[151643, 151645, 151665]
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_texts = self.mllm_processor.batch_decode(
+            generated_ids_trimmed,
+            # skip_special_tokens=True,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        return output_texts
+    
+
     @torch.no_grad()
-    def __call__(
+    def generate_image(
         self,
         prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
@@ -491,7 +595,6 @@ class OmniGen2Pipeline(DiffusionPipeline):
         verbose: bool = False,
         step_func=None,
     ):
-        
         height = height or self.default_sample_size * self.vae_scale_factor
         width = width or self.default_sample_size * self.vae_scale_factor
 
@@ -515,7 +618,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
 
         device = self._execution_device
 
-        # 3. Encode input prompt
+        # 3. Encode input promptb
         (
             prompt_embeds,
             prompt_attention_mask,
@@ -523,6 +626,7 @@ class OmniGen2Pipeline(DiffusionPipeline):
             negative_prompt_attention_mask,
         ) = self.encode_prompt(
             prompt,
+            input_images,
             self.do_text_classifier_free_guidance,
             negative_prompt=negative_prompt,
             num_images_per_prompt=num_images_per_prompt,
@@ -535,6 +639,44 @@ class OmniGen2Pipeline(DiffusionPipeline):
             use_text_encoder_penultimate_layer_feats=use_text_encoder_penultimate_layer_feats
         )
 
+        dtype = self.vae.dtype
+        # 3. Prepare control image
+        ref_latents = self.prepare_image(
+            images=input_images,
+            batch_size=batch_size,
+            num_images_per_prompt=num_images_per_prompt,
+            max_pixels=max_pixels,
+            device=device,
+            dtype=dtype,
+        )
+
+        # if input_images is not None:
+        #     for input_image in input_images:
+        #         width, height = input_image.size
+        #         cur_pixels = height * width
+        #         ratio = (max_pixels / cur_pixels) ** 0.5
+        #         ratio = min(ratio, 1.0) # do not upscale input image
+
+        #         new_height, new_width = int(height * ratio) // 16 * 16, int(width * ratio) // 16 * 16
+        #         input_image = input_image.resize((new_width, new_height), resample=Image.BICUBIC)
+        # else:
+        #     input_images = []
+
+        if input_images is None:
+            input_images = []
+        
+        if len(input_images) == 1 and align_res:
+            width, height = ref_latents.shape[-1], ref_latents.shape[-2]
+        else:
+            cur_pixels = height * width
+            ratio = 1
+            ratio = (max_pixels / cur_pixels) ** 0.5
+
+            height, width = int(height * ratio) // 16 * 16, int(width * ratio) // 16 * 16
+        
+        if len(input_images) == 0:
+            self._image_guidance_scale = 1
+
         # 4. Prepare latents.
         latent_channels = self.transformer.config.in_channels
         latents = self.prepare_latents(
@@ -546,38 +688,6 @@ class OmniGen2Pipeline(DiffusionPipeline):
             device,
             generator,
             latents,
-        )
-
-        dtype = self.vae.dtype
-
-        if input_images is not None:
-            for input_image in input_images:
-                width, height = input_image.size
-                cur_pixels = height * width
-                ratio = (max_pixels / cur_pixels) ** 0.5
-                ratio = min(ratio, 1.0) # do not upscale input image
-
-                new_height, new_width = int(height * ratio) // 16 * 16, int(width * ratio) // 16 * 16
-                input_image = input_image.resize((new_width, new_height), resample=Image.BICUBIC)
-        else:
-            input_images = []
-        
-        if len(input_images) == 1 and align_res:
-            width, height = input_images[0].size
-        else:
-            cur_pixels = height * width
-            ratio = 1
-            ratio = (max_pixels / cur_pixels) ** 0.5
-
-            height, width = int(height * ratio) // 16 * 16, int(width * ratio) // 16 * 16
-
-        # 3. Prepare control image
-        ref_latents = self.prepare_image(
-            images=input_images,
-            batch_size=batch_size,
-            num_images_per_prompt=num_images_per_prompt,
-            device=device,
-            dtype=dtype,
         )
 
         freqs_cis = OmniGen2RotaryPosEmbed.get_freqs_cis(
@@ -608,12 +718,72 @@ class OmniGen2Pipeline(DiffusionPipeline):
         
         # Offload all models
         self.maybe_free_model_hooks()
+        return image
+        
+    @torch.no_grad()
+    def __call__(
+        self,
+        prompt: Optional[Union[str, List[str]]] = None,
+        negative_prompt: Optional[Union[str, List[str]]] = None,
+        prompt_embeds: Optional[torch.FloatTensor] = None,
+        negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        prompt_attention_mask: Optional[torch.LongTensor] = None,
+        negative_prompt_attention_mask: Optional[torch.LongTensor] = None,
+        use_text_encoder_penultimate_layer_feats: bool = False,
+        max_sequence_length: Optional[int] = None,
+        callback_on_step_end_tensor_inputs: Optional[List[str]] = None,
+        input_images: Optional[List[PIL.Image.Image]] = None,
+        num_images_per_prompt: int = 1,
+        height: Optional[int] = 1024,
+        width: Optional[int] = 1024,
+        max_pixels: Optional[int] = 1024 * 1024,
+        align_res: bool = True,
+        num_inference_steps: int = 28,
+        text_guidance_scale: float = 4.0,
+        image_guidance_scale: float = 1.0,
+        attention_kwargs: Optional[Dict[str, Any]] = None,
+        timesteps: List[int] = None,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents: Optional[torch.FloatTensor] = None,
+        output_type: Optional[str] = "pil",
+        return_dict: bool = True,
+        verbose: bool = False,
+        step_func=None,
+    ):
+        assert isinstance(prompt, str), "prompt must be a string since chat mode only support one prompt per turn"
 
+        # input_images = self.preprocess_images(input_images, max_input_image_size)
+        prompt = self._apply_chat_template(prompt, input_images)
+        generated_text = self.generate_text(prompt, input_images)[0]
+
+        images = None
+        if generated_text.startswith("<|img|>"):
+            prompt = prompt + generated_text.split("<|img|>")[0]
+            images = self.generate_image(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                use_text_encoder_penultimate_layer_feats=use_text_encoder_penultimate_layer_feats,
+                max_sequence_length=max_sequence_length,
+                input_images=input_images,
+                num_images_per_prompt=num_images_per_prompt,
+                height=height,
+                width=width,
+                align_res=align_res,
+                num_inference_steps=num_inference_steps,
+                text_guidance_scale=text_guidance_scale,
+                image_guidance_scale=image_guidance_scale,
+                timesteps=timesteps,
+                generator=generator,
+                latents=latents,
+                return_dict=False,
+                verbose=verbose,
+                step_func=step_func,
+            )
         if not return_dict:
-            return image
+            return generated_text, images
         else:
-            return FMPipelineOutput(images=image)
-
+            return OmniGen2PipelineOutput(text=generated_text, images=images)
+    
     def processing(
         self,
         latents,

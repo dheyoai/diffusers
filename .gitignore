@@ -219,3 +219,6 @@ logs/
 results/
 test_jsonl.py
 test_jsonl.sh
+pbs_files/
+convert_ckpt_to_pipeline.py
+inference_test_efficiency.py

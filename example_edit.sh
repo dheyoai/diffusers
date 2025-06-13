@@ -19,7 +19,7 @@ python inference.py \
 --width 1024 \
 --text_guidance_scale 5.0 \
 --image_guidance_scale 1.8 \
---instruction "Add a beautiful girl with long flowing hair seated beside the teddy bear on the park bench." \
+--instruction "Add a beautiful girl with long flowing hair seated beside the bear toy on the park bench." \
 --input_image_path example_images/02.jpg \
 --output_image_path /share_2/luoxin/projects/OmniGen2/output_edit.png \
 --num_images_per_prompt 3

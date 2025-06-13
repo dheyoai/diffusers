@@ -601,9 +601,6 @@ class OmniGen2Pipeline(DiffusionPipeline):
         ori_height = height
         ori_width = width
 
-        height = height // 16 * 16
-        width = width // 16 * 16
-
         self._text_guidance_scale = text_guidance_scale
         self._image_guidance_scale = image_guidance_scale
         self._attention_kwargs = attention_kwargs
@@ -666,11 +663,11 @@ class OmniGen2Pipeline(DiffusionPipeline):
             input_images = []
         
         if len(input_images) == 1 and align_res:
-            width, height = ref_latents.shape[-1], ref_latents.shape[-2]
+            width, height = ref_latents[0][0].shape[-1] * self.vae_scale_factor, ref_latents[0][0].shape[-2] * self.vae_scale_factor
         else:
             cur_pixels = height * width
-            ratio = 1
             ratio = (max_pixels / cur_pixels) ** 0.5
+            ratio = min(ratio, 1.0)
 
             height, width = int(height * ratio) // 16 * 16, int(width * ratio) // 16 * 16
         

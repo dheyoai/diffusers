@@ -74,7 +74,7 @@ def run(instruction, width_input, height_input, num_inference_steps, image_input
     
     vis_images = [to_tensor(image) * 2 - 1 for image in results.images]
 
-    # Concatenate input images of different sizes horizontally.
+    # Concatenate input images of different sizes horizontally
     max_height = max(img.shape[-2] for img in vis_images)
     total_width = sum(img.shape[-1] for img in vis_images)
     canvas = torch.zeros((3, max_height, total_width), device=vis_images[0].device)

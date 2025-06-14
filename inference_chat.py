@@ -13,11 +13,7 @@ from torchvision.transforms.functional import to_pil_image, to_tensor
 
 from accelerate import Accelerator
 
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
-
-# from omnigen2.pipelines.omnigen2.pipeline_omnigen2_chat import OmniGen2ChatPipeline
-# from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
-from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
+from omnigen2.pipelines.omnigen2.pipeline_omnigen2_chat import OmniGen2ChatPipeline
 from omnigen2.utils.img_util import resize_image
 
 
@@ -115,8 +111,8 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dtype: torch.dtype) -> OmniGen2Pipeline:
-    pipeline = OmniGen2Pipeline.from_pretrained(
+def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dtype: torch.dtype) -> OmniGen2ChatPipeline:
+    pipeline = OmniGen2ChatPipeline.from_pretrained(
         args.model_path,
         torch_dtype=weight_dtype,
         trust_remote_code=True,
@@ -148,7 +144,7 @@ def preprocess(input_image_path: List[str] = []) -> Tuple[str, str, List[Image.I
 
 def run(args: argparse.Namespace, 
         accelerator: Accelerator, 
-        pipeline: OmniGen2Pipeline, 
+        pipeline: OmniGen2ChatPipeline,
         instruction: str, 
         negative_prompt: str, 
         input_images: List[Image.Image]) -> Image.Image:
@@ -203,10 +199,14 @@ def main(args: argparse.Namespace, root_dir: str) -> None:
 
     # Generate and save image
     results = run(args, accelerator, pipeline, args.instruction, args.negative_prompt, input_images)
-    vis_images = [to_tensor(image) * 2 - 1 for image in results.images]
-    output_image = create_collage(vis_images)
-    output_image.save(args.output_image_path)
-    print(f"Image saved to {args.output_image_path}")
+    print(f"{results=}", flush=True)
+    if results.images is not None:
+        vis_images = [to_tensor(image) * 2 - 1 for image in results.images]
+        output_image = create_collage(vis_images)
+        output_image.save(args.output_image_path)
+        print(f"Image saved to {args.output_image_path}")
+
+    print(f"Text: {results.text=}", flush=True)
 
 if __name__ == "__main__":
     root_dir = os.path.abspath(os.path.join(__file__, os.path.pardir))

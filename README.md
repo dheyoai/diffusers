@@ -25,6 +25,7 @@
 - **2025-06-16**: We release OmniGen2-preview, a multimodal generation model. 
 
 ## 📌 TODO
+- [ ] Technical report.
 - [ ] Training data and scripts.
 - [ ] In-context generation benchmark OmniContext.
 - [ ] ComfyUI and Replicate Demo~(commuity support will be appreciated!).

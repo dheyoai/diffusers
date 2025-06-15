@@ -26,8 +26,9 @@
 
 ## 📌 TODO
 - [ ] Technical report.
-- [ ] Training data and scripts.
-- [ ] In-context generation benchmark OmniContext.
+- [ ] Model checkpoint.
+- [ ] Training data and pipeline scripts.
+- [ ] In-context generation benchmark: OmniContext.
 - [ ] ComfyUI and Replicate Demo~(commuity support will be appreciated!).
 
 ## 🚀 Quick Start
@@ -102,7 +103,7 @@ To achieve optimal results with OmniGen2, you can adjust the following key hyper
 - `text_guidance_scale`: Controls how strictly the output adheres to the text prompt (Classifier-Free Guidance).
     - **For Text-to-Image**: Use a higher value (e.g., 6-7) for simple or less detailed prompts. Use a lower value (e.g., 4) for complex and highly detailed prompts.
     - **For Editing/Composition**: A moderate value around 4-5 is recommended.
-- `image_guidance_scale`: This controls how much the final image should resemble your reference image.
+- `image_guidance_scale`: This controls how much the final image should resemble the input reference image.
     - **The Trade-off**: A higher value (~2.0) makes the output more faithful to the reference image's structure and style, but it might ignore parts of your text prompt. A lower value (~1.5) gives the text prompt more influence.
     - **Tip**: Start with 1.5 and increase it if you need more consistency with the reference image.
 - `max_input_image_pixels`: To manage processing speed and memory consumption, reference images exceeding this total pixel count will be automatically resized.

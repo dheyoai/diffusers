@@ -26,6 +26,7 @@
 
 ## 📌 TODO
 - [ ] Training data and scripts.
+- [ ] In-context generation benchmark OmniContext.
 - [ ] ComfyUI and Replicate Demo~(commuity support will be appreciated!).
 
 ## 🚀 Quick Start

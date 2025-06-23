@@ -176,3 +176,9 @@ tags
 
 # wandb
 wandb
+
+inference.py
+shivanvitha_*
+examples/dreambooth/balakrishna_outputs*
+examples/dreambooth/testing*
+diffusers_env*

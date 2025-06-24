@@ -182,3 +182,6 @@ shivanvitha_*
 examples/dreambooth/balakrishna_outputs*
 examples/dreambooth/testing*
 diffusers_env*
+inferenced_*
+examples/dreambooth/*prior_preservation*
+examples/dreambooth/pp*

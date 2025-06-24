@@ -885,7 +885,8 @@ def _encode_prompt_with_t5(
     text_input_ids = text_inputs.input_ids
     prompt_embeds = text_encoder(text_input_ids.to(device))[0]
 
-    dtype = text_encoder.dtype
+    # dtype = text_encoder.dtype
+    dtype = torch.bfloat16
     prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
 
     _, seq_len, _ = prompt_embeds.shape
@@ -926,7 +927,7 @@ def _encode_prompt_with_clip(
 
     pooled_prompt_embeds = prompt_embeds[0]
     prompt_embeds = prompt_embeds.hidden_states[-2]
-    prompt_embeds = prompt_embeds.to(dtype=text_encoder.dtype, device=device)
+    prompt_embeds = prompt_embeds.to(dtype=torch.bfloat16, device=device)
 
     _, seq_len, _ = prompt_embeds.shape
     # duplicate text embeddings for each generation per prompt, using mps friendly method
@@ -947,8 +948,12 @@ def encode_prompt(
 ):
     prompt = [prompt] if isinstance(prompt, str) else prompt
 
+    # print(tokenizers)
+    # import pdb; pdb.set_trace()
     clip_tokenizers = tokenizers[:2]
     clip_text_encoders = text_encoders[:2]
+    # print(clip_text_encoders)
+    # import pdb; pdb.set_trace()
 
     clip_prompt_embeds_list = []
     clip_pooled_prompt_embeds_list = []
@@ -1000,7 +1005,7 @@ def main(args):
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
-    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -1039,7 +1044,7 @@ def main(args):
     if args.with_prior_preservation:
         class_images_dir = Path(args.class_data_dir)
         if not class_images_dir.exists():
-            class_images_dir.mkdir(parents=True)
+            class_images_dir.mkdir(parents=True, exist_ok=True)
         cur_class_images = len(list(class_images_dir.iterdir()))
 
         if cur_class_images < args.num_class_images:
@@ -1073,7 +1078,7 @@ def main(args):
             ):
                 images = pipeline(example["prompt"]).images
 
-                for i, image in enumerate(images):
+                for i, image in enumerate(images): ## change default number of class-specific images to be generated
                     hash_image = insecure_hashlib.sha1(image.tobytes()).hexdigest()
                     image_filename = class_images_dir / f"{example['index'][i] + cur_class_images}-{hash_image}.jpg"
                     image.save(image_filename)
@@ -1603,9 +1608,10 @@ def main(args):
                 else:
                     prompt_embeds, pooled_prompt_embeds = encode_prompt(
                         text_encoders=[text_encoder_one, text_encoder_two, text_encoder_three],
-                        tokenizers=None,
-                        prompt=None,
+                        tokenizers=[tokenizer_one, tokenizer_two, tokenizer_three],
+                        prompt=prompts,
                         text_input_ids_list=[tokens_one, tokens_two, tokens_three],
+                        max_sequence_length=args.max_sequence_length
                     )
                     model_pred = transformer(
                         hidden_states=noisy_model_input,
@@ -1771,7 +1777,7 @@ def main(args):
 
         # Final inference
         # Load previous pipeline
-        pipeline = StableDiffusion3Pipeline.from_pretrained(
+        pipeline = StableDiffusion3Pipeline.from_pretrained( ## here
             args.output_dir,
             revision=args.revision,
             variant=args.variant,

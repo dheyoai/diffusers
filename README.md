@@ -51,3 +51,102 @@ accelerate launch --config_file /path/to/your/custom_config.yaml train_dreamboot
   --lr_warmup_steps=0 \
   --max_train_steps=400 
 ```
+
+## Reproducing Dreambooth Balakrishna
+
+### Fine-tuning command
+#### For Stable Diffusion 3.5 Medium - Using Distributed Data Parallelism
+```
+accelerate launch --config_file config/accelerate_dist.yaml train_dreambooth_sd3.py \ 
+      --pretrained_model_name_or_path=stabilityai/stable-diffusion-3.5-medium  \
+      --instance_data_dir="./balakrishna_pngs" \
+      --output_dir="sd3_medium_balayya_3" \
+      --instance_prompt="a photo of sks man" \
+      --resolution=1024 --train_batch_size=1 \
+      --gradient_accumulation_steps=1 \
+      --learning_rate=2e-6 \
+      --lr_scheduler="constant" \
+      --lr_warmup_steps=100 \
+      --max_train_steps=2000 \
+      --train_text_encoder \
+      --validation_prompt="a photo of sks man" \
+      --num_validation_images=2 \
+      --validation_epochs=5 \
+      --seed 0 \
+      --mixed_precision=bf16   \
+      --with_prior_preservation \
+      --prior_loss_weight=1.0 \
+      --class_data_dir="sd3_medium_balayya_prior_preservation_outputs_2" \
+      --class_prompt="a full photo of a middle-aged, slightly fat indian man with a mustache" \
+      --num_class_images=128 \
+      --checkpointing_steps 200 
+```
+
+#### For Stable Diffusion 3.5 Large (w/o Training Text Encoders) - Using DeepSpeed Stage-2
+```
+accelerate launch --config_file config/zero3.yaml train_dreambooth_sd3.py \   
+      --pretrained_model_name_or_path=stabilityai/stable-diffusion-3.5-large \
+      --instance_data_dir="./balakrishna_pngs" \
+      --output_dir="sd3_large_no_text_encoder_training_balayya" \
+      --instance_prompt="a photo of sks man" \
+      --resolution=1024 \
+      --train_batch_size=1 \
+      --gradient_accumulation_steps=1 \
+      --learning_rate=2e-6 \
+      --lr_scheduler="constant" \
+      --lr_warmup_steps=100 \
+      --max_train_steps=1500 \
+      --validation_prompt="a photo of sks man" \
+      --num_validation_images=2 \
+      --validation_epochs=5 \
+      --seed 0 \
+      --with_prior_preservation \
+      --prior_loss_weight=1.0 \
+      --class_data_dir="sd3_large_balayya_prior_preservation_outputs" \
+      --class_prompt="a full photo of a middle-aged, slightly fat indian man with a mustache" \
+      --num_class_images=128 \
+      --checkpointing_steps 200 \
+      --prior_generation_precision bf16
+
+```
+
+
+### Inference Script
+```python
+from diffusers import DiffusionPipeline, UNet2DConditionModel, PNDMScheduler, StableDiffusion3Pipeline, StableDiffusionPipeline
+from transformers import CLIPTextModel
+import torch
+from diffusers.utils import load_image
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+pipeline = StableDiffusion3Pipeline.from_pretrained(
+    "examples/dreambooth/sd3_large_no_text_encoder_training_balayya", dtype=torch.bfloat16,
+).to(device)
+
+
+image = pipeline(prompt="a photo of sks man drinking coffee, high detailed skin:1.2), 8k uhd, dslr, soft lighting, high quality, film grain, Fujifilm XT3", 
+                 num_inference_steps=100, 
+                 guidance_scale=20, 
+                 negative_prompt="extra arms, extra fingers, extra legs, mutated hands, fused fingers, long neck, cross-eyed, long head, deformed hands, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality").images[0]
+image.save("inferenced_images/balayya34.png")
+
+```
+
+## Experiments with IP-Adapter and Stable Diffusion 3.5 Large
+
+### Without Fine-tuning the text encoders
+
+Original | Before Fine-tuning           |  After Fine-tuning
+:-------------------------: | :-------------------------:|:-------------------------:
+![og](/examples/dreambooth/balakrishna_pngs/ed72a8bc-0fab-410e-9fa0-8255686bb6d9.png "title-1")  | ![test1](./demo_images/test1.png "title-1") | ![test1_ft](./demo_images/test1_ft.png "title-2")
+Original  | A photo of a man in beach | A photo of sks man on beach
+
+
+
+Original | Before Fine-tuning           |  After Fine-tuning
+:-------------------------: | :-------------------------:|:-------------------------:
+![og](/examples/dreambooth/balakrishna_pngs/mustache_balayya.png "title-1")  | ![test2](./demo_images/test2.png "title-1") | ![test2_ft](./demo_images/test2_ft.png "title-2")
+Original  | A photo of a man in red shirt with spring background | A photo of sks man in red shirt with spring background
+
+

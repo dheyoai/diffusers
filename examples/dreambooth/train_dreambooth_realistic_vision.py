@@ -29,7 +29,7 @@ import numpy as np
 import torch
 import torch.utils.checkpoint
 import transformers
-from accelerate import Accelerator, DeepSpeedPlugin
+from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from huggingface_hub import create_repo, upload_folder
@@ -48,6 +48,9 @@ from diffusers import (
     FlowMatchEulerDiscreteScheduler,
     SD3Transformer2DModel,
     StableDiffusion3Pipeline,
+    StableDiffusionPipeline,
+    DDIMScheduler
+
 )
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import compute_density_for_timestep_sampling, compute_loss_weighting_for_sd3, free_memory
@@ -145,17 +148,17 @@ Please adhere to the licensing terms as described `[here]({license_url})`.
     model_card.save(os.path.join(repo_folder, "README.md"))
 
 
-def load_text_encoders(class_one, class_two, class_three):
+def load_text_encoders(class_one, class_two):
     text_encoder_one = class_one.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
     )
     text_encoder_two = class_two.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder_2", revision=args.revision, variant=args.variant
     )
-    text_encoder_three = class_three.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder_3", revision=args.revision, variant=args.variant
-    )
-    return text_encoder_one, text_encoder_two, text_encoder_three
+    # text_encoder_three = class_three.from_pretrained(
+    #     args.pretrained_model_name_or_path, subfolder="text_encoder_3", revision=args.revision, variant=args.variant
+    # )
+    return text_encoder_one, text_encoder_two
 
 
 def log_validation(
@@ -213,10 +216,10 @@ def import_model_class_from_model_name_or_path(
         from transformers import CLIPTextModelWithProjection
 
         return CLIPTextModelWithProjection
-    elif model_class == "T5EncoderModel":
-        from transformers import T5EncoderModel
+    elif model_class == "CLIPTextModel":
+        from transformers import CLIPTextModel
 
-        return T5EncoderModel
+        return CLIPTextModel
     else:
         raise ValueError(f"{model_class} is not supported.")
 
@@ -1014,43 +1017,7 @@ def main(args):
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
-    # deepspeed_config = {
-    #     "zero_optimization": {
-    #         "stage": 3,  # Use ZeRO Stage 3 as per your earlier zero3_init_flag: true
-    #         "offload_optimizer": None,
-    #         "offload_param": None,
-    #         "overlap_comm": True,
-    #         "contiguous_gradients": True
-    #     },
-    #     "train_micro_batch_size_per_gpu": 1,  # Set to fix batch size error
-    #     "train_batch_size": "auto",
-    #     "gradient_accumulation_steps": args.gradient_accumulation_steps or 1,
-    #     "gradient_clipping": 1.0,
-    #     "fp16": {"enabled": True},  # Align with zero3_save_16bit_model
-    #     "zero3_init": True,  # Enable ZeRO Stage 3 initialization
-    #     "zero3_save_16bit_model": True  # Save 16-bit model
-    # }
-
-    # # Initialize DeepSpeedPlugin with only hf_ds_config
-    # deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=deepspeed_config)
-
     accelerator = Accelerator(
-        # deepspeed_plugin=deepspeed_plugin,
-        # deepspeed_plugin=DeepSpeedPlugin(
-        #     hf_ds_config={
-        #         "zero_optimization": {
-        #             "stage": 3,  # ZeRO Stage 3 as per zero3_init_flag
-        #             # "offload_optimizer": {"device": "cpu"},
-        #             # "offload_param": {"device": "cpu"},
-        #             "overlap_comm": True,
-        #             "contiguous_gradients": True
-        #         },
-        #         "train_micro_batch_size_per_gpu": 2,  # Set to fix previous batch size error
-        #         "train_batch_size": "auto",
-        #         "gradient_clipping": 1.0,
-        #         "fp16": {"enabled": True}  # Align with zero3_save_16bit_model
-        #     }
-        # ),
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
@@ -1058,9 +1025,6 @@ def main(args):
         kwargs_handlers=[kwargs],
     )
 
-    # print(accelerator.state.deepspeed_plugin)
-    # import pdb; pdb.set_trace()
-# AcceleratorState().deepspeed_plugin.deepspeed_config['train_micro_batch_size_per_gpu']
     # Disable AMP for MPS.
     if torch.backends.mps.is_available():
         accelerator.native_amp = False
@@ -1103,7 +1067,7 @@ def main(args):
                 torch_dtype = torch.float16
             elif args.prior_generation_precision == "bf16":
                 torch_dtype = torch.bfloat16
-            pipeline = StableDiffusion3Pipeline.from_pretrained(
+            pipeline = StableDiffusionPipeline.from_pretrained(
                 args.pretrained_model_name_or_path,
                 torch_dtype=torch_dtype,
                 revision=args.revision,
@@ -1155,11 +1119,11 @@ def main(args):
         subfolder="tokenizer_2",
         revision=args.revision,
     )
-    tokenizer_three = T5TokenizerFast.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="tokenizer_3",
-        revision=args.revision,
-    )
+    # tokenizer_three = T5TokenizerFast.from_pretrained(
+    #     args.pretrained_model_name_or_path,
+    #     subfolder="tokenizer_3",
+    #     revision=args.revision,
+    # )
 
     # import correct text encoder classes
     text_encoder_cls_one = import_model_class_from_model_name_or_path(
@@ -1168,17 +1132,17 @@ def main(args):
     text_encoder_cls_two = import_model_class_from_model_name_or_path(
         args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
     )
-    text_encoder_cls_three = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_3"
-    )
+    # text_encoder_cls_three = import_model_class_from_model_name_or_path(
+    #     args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_3"
+    # )
 
     # Load scheduler and models
-    noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+    noise_scheduler = DDIMScheduler.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="scheduler"
     )
     noise_scheduler_copy = copy.deepcopy(noise_scheduler)
-    text_encoder_one, text_encoder_two, text_encoder_three = load_text_encoders(
-        text_encoder_cls_one, text_encoder_cls_two, text_encoder_cls_three
+    text_encoder_one, text_encoder_two = load_text_encoders(
+        text_encoder_cls_one, text_encoder_cls_two
     )
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -1195,11 +1159,11 @@ def main(args):
     if args.train_text_encoder:
         text_encoder_one.requires_grad_(True)
         text_encoder_two.requires_grad_(True)
-        text_encoder_three.requires_grad_(True)
+        # text_encoder_three.requires_grad_(True)
     else:
         text_encoder_one.requires_grad_(False)
         text_encoder_two.requires_grad_(False)
-        text_encoder_three.requires_grad_(False)
+        # text_encoder_three.requires_grad_(False)
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora transformer) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -1215,18 +1179,18 @@ def main(args):
             "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
         )
 
-    vae.to(accelerator.device, dtype=torch.bfloat16) ### fp32 or fp16?
+    vae.to(accelerator.device, dtype=torch.float32)
     if not args.train_text_encoder:
         text_encoder_one.to(accelerator.device, dtype=weight_dtype)
         text_encoder_two.to(accelerator.device, dtype=weight_dtype)
-        text_encoder_three.to(accelerator.device, dtype=weight_dtype)
+        # text_encoder_three.to(accelerator.device, dtype=weight_dtype)
 
     if args.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
         if args.train_text_encoder:
             text_encoder_one.gradient_checkpointing_enable()
             text_encoder_two.gradient_checkpointing_enable()
-            text_encoder_three.gradient_checkpointing_enable()
+            # text_encoder_three.gradient_checkpointing_enable()
 
     def unwrap_model(model):
         model = accelerator.unwrap_model(model)
@@ -1314,16 +1278,16 @@ def main(args):
             "weight_decay": args.adam_weight_decay_text_encoder,
             "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
         }
-        text_parameters_three_with_lr = {
-            "params": text_encoder_three.parameters(),
-            "weight_decay": args.adam_weight_decay_text_encoder,
-            "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
-        }
+        # text_parameters_three_with_lr = {
+        #     "params": text_encoder_three.parameters(),
+        #     "weight_decay": args.adam_weight_decay_text_encoder,
+        #     "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
+        # }
         params_to_optimize = [
             transformer_parameters_with_lr,
             text_parameters_one_with_lr,
             text_parameters_two_with_lr,
-            text_parameters_three_with_lr,
+            # text_parameters_three_with_lr,
         ]
     else:
         params_to_optimize = [transformer_parameters_with_lr]
@@ -1418,8 +1382,8 @@ def main(args):
     )
 
     if not args.train_text_encoder:
-        tokenizers = [tokenizer_one, tokenizer_two, tokenizer_three]
-        text_encoders = [text_encoder_one, text_encoder_two, text_encoder_three]
+        tokenizers = [tokenizer_one, tokenizer_two]
+        text_encoders = [text_encoder_one, text_encoder_two]
 
         def compute_text_embeddings(prompt, text_encoders, tokenizers):
             with torch.no_grad():
@@ -1449,7 +1413,7 @@ def main(args):
     if not args.train_text_encoder and not train_dataset.custom_instance_prompts:
         del tokenizers, text_encoders
         # Explicitly delete the objects as well, otherwise only the lists are deleted and the original references remain, preventing garbage collection
-        del text_encoder_one, text_encoder_two, text_encoder_three
+        del text_encoder_one, text_encoder_two
         free_memory()
 
     # If custom instance prompts are NOT provided (i.e. the instance prompt is used for all images),
@@ -1468,14 +1432,14 @@ def main(args):
         else:
             tokens_one = tokenize_prompt(tokenizer_one, args.instance_prompt)
             tokens_two = tokenize_prompt(tokenizer_two, args.instance_prompt)
-            tokens_three = tokenize_prompt(tokenizer_three, args.instance_prompt)
+            # tokens_three = tokenize_prompt(tokenizer_three, args.instance_prompt)
             if args.with_prior_preservation:
                 class_tokens_one = tokenize_prompt(tokenizer_one, args.class_prompt)
                 class_tokens_two = tokenize_prompt(tokenizer_two, args.class_prompt)
-                class_tokens_three = tokenize_prompt(tokenizer_three, args.class_prompt)
+                # class_tokens_three = tokenize_prompt(tokenizer_three, args.class_prompt)
                 tokens_one = torch.cat([tokens_one, class_tokens_one], dim=0)
                 tokens_two = torch.cat([tokens_two, class_tokens_two], dim=0)
-                tokens_three = torch.cat([tokens_three, class_tokens_three], dim=0)
+                # tokens_three = torch.cat([tokens_three, class_tokens_three], dim=0)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -1495,30 +1459,23 @@ def main(args):
 
     # Prepare everything with our `accelerator`.
     if args.train_text_encoder:
-        # (
-        #     transformer,
-        #     text_encoder_one,
-        #     text_encoder_two,
-        #     text_encoder_three,
-        #     optimizer,
-        #     train_dataloader,
-        #     lr_scheduler,
-        # ) = accelerator.prepare(
-        #     transformer,
-        #     text_encoder_one,
-        #     text_encoder_two,
-        #     text_encoder_three,
-        #     optimizer,
-        #     train_dataloader,
-        #     lr_scheduler,
-        # )
-        transformer = accelerator.prepare(transformer)
-        text_encoder_one = accelerator.prepare(text_encoder_one)
-        text_encoder_two = accelerator.prepare(text_encoder_two)
-        text_encoder_three = accelerator.prepare(text_encoder_three)
-        optimizer = accelerator.prepare(optimizer)
-        train_dataloader = accelerator.prepare(train_dataloader)
-        lr_scheduler = accelerator.prepare(lr_scheduler)
+        (
+            transformer,
+            text_encoder_one,
+            text_encoder_two,
+            # text_encoder_three,
+            optimizer,
+            train_dataloader,
+            lr_scheduler,
+        ) = accelerator.prepare(
+            transformer,
+            text_encoder_one,
+            text_encoder_two,
+            # text_encoder_three,
+            optimizer,
+            train_dataloader,
+            lr_scheduler,
+        )
     else:
         transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
             transformer, optimizer, train_dataloader, lr_scheduler
@@ -1603,12 +1560,12 @@ def main(args):
         if args.train_text_encoder:
             text_encoder_one.train()
             text_encoder_two.train()
-            text_encoder_three.train()
+            # text_encoder_three.train()
 
         for step, batch in enumerate(train_dataloader):
             models_to_accumulate = [transformer]
             if args.train_text_encoder:
-                models_to_accumulate.extend([text_encoder_one, text_encoder_two, text_encoder_three])
+                models_to_accumulate.extend([text_encoder_one, text_encoder_two])
             with accelerator.accumulate(models_to_accumulate):
                 pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
                 prompts = batch["prompts"]
@@ -1622,7 +1579,7 @@ def main(args):
                     else:
                         tokens_one = tokenize_prompt(tokenizer_one, prompts)
                         tokens_two = tokenize_prompt(tokenizer_two, prompts)
-                        tokens_three = tokenize_prompt(tokenizer_three, prompts)
+                        # tokens_three = tokenize_prompt(tokenizer_three, prompts)
 
                 # Convert images to latent space
                 model_input = vae.encode(pixel_values).latent_dist.sample()
@@ -1661,10 +1618,10 @@ def main(args):
                     )[0]
                 else:
                     prompt_embeds, pooled_prompt_embeds = encode_prompt(
-                        text_encoders=[text_encoder_one, text_encoder_two, text_encoder_three],
-                        tokenizers=[tokenizer_one, tokenizer_two, tokenizer_three],
+                        text_encoders=[text_encoder_one, text_encoder_two],
+                        tokenizers=[tokenizer_one, tokenizer_two],
                         prompt=prompts,
-                        text_input_ids_list=[tokens_one, tokens_two, tokens_three],
+                        text_input_ids_list=[tokens_one, tokens_two],
                         max_sequence_length=args.max_sequence_length
                     )
                     model_pred = transformer(
@@ -1722,7 +1679,7 @@ def main(args):
                             transformer.parameters(),
                             text_encoder_one.parameters(),
                             text_encoder_two.parameters(),
-                            text_encoder_three.parameters(),
+                            # text_encoder_three.parameters(),
                         )
                         if args.train_text_encoder
                         else transformer.parameters()
@@ -1737,11 +1694,6 @@ def main(args):
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
-
-
-                if global_step % args.checkpointing_steps == 0:
-                    accelerator.wait_for_everyone()
-
 
                 if accelerator.is_main_process:
                     if global_step % args.checkpointing_steps == 0:
@@ -1766,25 +1718,8 @@ def main(args):
                                     shutil.rmtree(removing_checkpoint)
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        # # deepspeed_engine = accelerator.state.deepspeed_plugin.deepspeed_engine
-                        # accelerator.save_state(save_path)
-                        # logger.info(f"Saved state to {save_path}")
-                        # checkpoint_tag = f"checkpoint-{global_step}"
-                        # unwrapped_model = accelerator.unwrap_model(transformer)
-
-                        # if hasattr(unwrapped_model, "save_checkpoint"):
-                        # unwrapped_model.save_checkpoint(args.output_dir, tag=checkpoint_tag)
-                        model_unwrapped = accelerator.unwrap_model(transformer)
-                        model_unwrapped.save_pretrained(os.path.join(save_path, "transformer"), safe_serialization=True)
-
-                        # accelerator.wait_for_everyone()
-                        logger.info(f"Saved DeepSpeed checkpoint at step {global_step}")
-                        # else:
-                            # logger.warning("Unwrapped model does not support `save_checkpoint` — skipping save.")
-
-
-                # if global_step % args.checkpointing_steps == 0: ## trying to synchronize the GPU processes
-                # accelerator.wait_for_everyone() 
+                        accelerator.save_state(save_path)
+                        logger.info(f"Saved state to {save_path}")
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1797,18 +1732,18 @@ def main(args):
             if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
                 # create pipeline
                 if not args.train_text_encoder:
-                    text_encoder_one, text_encoder_two, text_encoder_three = load_text_encoders(
-                        text_encoder_cls_one, text_encoder_cls_two, text_encoder_cls_three
+                    text_encoder_one, text_encoder_two = load_text_encoders(
+                        text_encoder_cls_one, text_encoder_cls_two
                     )
                     text_encoder_one.to(weight_dtype)
                     text_encoder_two.to(weight_dtype)
-                    text_encoder_three.to(weight_dtype)
+                    # text_encoder_three.to(weight_dtype)
                 pipeline = StableDiffusion3Pipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     vae=vae,
                     text_encoder=accelerator.unwrap_model(text_encoder_one),
                     text_encoder_2=accelerator.unwrap_model(text_encoder_two),
-                    text_encoder_3=accelerator.unwrap_model(text_encoder_three),
+                    # text_encoder_3=accelerator.unwrap_model(text_encoder_three),
                     transformer=accelerator.unwrap_model(transformer),
                     revision=args.revision,
                     variant=args.variant,
@@ -1824,7 +1759,7 @@ def main(args):
                     torch_dtype=weight_dtype,
                 )
                 if not args.train_text_encoder:
-                    del text_encoder_one, text_encoder_two, text_encoder_three
+                    del text_encoder_one, text_encoder_two
                     free_memory()
 
     # Save the lora layers
@@ -1835,13 +1770,13 @@ def main(args):
         if args.train_text_encoder:
             text_encoder_one = unwrap_model(text_encoder_one)
             text_encoder_two = unwrap_model(text_encoder_two)
-            text_encoder_three = unwrap_model(text_encoder_three)
+            # text_encoder_three = unwrap_model(text_encoder_three)
             pipeline = StableDiffusion3Pipeline.from_pretrained(
                 args.pretrained_model_name_or_path,
                 transformer=transformer,
                 text_encoder=text_encoder_one,
                 text_encoder_2=text_encoder_two,
-                text_encoder_3=text_encoder_three,
+                # text_encoder_3=text_encoder_three,
             )
         else:
             pipeline = StableDiffusion3Pipeline.from_pretrained(

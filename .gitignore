@@ -185,3 +185,11 @@ diffusers_env*
 inferenced_*
 examples/dreambooth/*prior_preservation*
 examples/dreambooth/pp*
+output.png 
+ckpt_inference.py 
+ipadapter_test.py 
+models/*
+ip_adapter/*
+IP-Adapter/*
+examples/dreambooth/sd3_*
+examples/dreambooth/reali*

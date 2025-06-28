@@ -193,3 +193,6 @@ ip_adapter/*
 IP-Adapter/*
 examples/dreambooth/sd3_*
 examples/dreambooth/reali*
+.env
+SimSun*
+sdxl_*

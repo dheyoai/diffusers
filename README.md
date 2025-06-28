@@ -149,4 +149,14 @@ Original | Before Fine-tuning           |  After Fine-tuning
 ![og](/examples/dreambooth/balakrishna_pngs/mustache_balayya.png "title-1")  | ![test2](./demo_images/test2.png "title-1") | ![test2_ft](./demo_images/test2_ft.png "title-2")
 Original  | A photo of a man in red shirt with spring background | A photo of sks man in red shirt with spring background
 
+## Running the Agentic Pipeline
 
+### Prerequisities
+
+```
+pip install together
+```
+
+```
+pip install python-dotenv
+```

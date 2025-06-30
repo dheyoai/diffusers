@@ -195,4 +195,4 @@ examples/dreambooth/sd3_*
 examples/dreambooth/reali*
 .env
 SimSun*
-sdxl_*
+*sdxl_*

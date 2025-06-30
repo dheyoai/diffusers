@@ -149,14 +149,83 @@ Original | Before Fine-tuning           |  After Fine-tuning
 ![og](/examples/dreambooth/balakrishna_pngs/mustache_balayya.png "title-1")  | ![test2](./demo_images/test2.png "title-1") | ![test2_ft](./demo_images/test2_ft.png "title-2")
 Original  | A photo of a man in red shirt with spring background | A photo of sks man in red shirt with spring background
 
+
+
+## Experiments with Stable Diffusion XL 
+
+### Launch Command
+```
+accelerate launch --config_file config/accelerate_dist.yaml train_dreambooth_sdxl.py \
+      --pretrained_model_name_or_path=stabilityai/stable-diffusion-xl-base-1.0  \
+      --instance_data_dir="./balakrishna_pngs" \
+      --output_dir="sdxl_full_training_balayya" \
+      --instance_prompt="a photo of sks man" \
+      --resolution=1024 \
+      --train_batch_size=1 \
+      --gradient_accumulation_steps=1 \
+      --learning_rate=2e-6 \
+      --lr_scheduler="constant" \
+      --lr_warmup_steps=100 \
+      --max_train_steps=2500 \
+      --validation_prompt="a photo of sks man" \
+      --num_validation_images=2 \
+      --validation_epochs=5 \
+      --seed 0 \
+      --with_prior_preservation \
+      --prior_loss_weight=1.0 \
+      --class_data_dir="sdxl_full_balayya_prior_preservation_outputs" \
+      --class_prompt="a full photo of a middle-aged, slightly fat indian man with a mustache" \
+      --num_class_images=128 \
+      --checkpointing_steps 200 \
+      --prior_generation_precision bf16 \ 
+      --train_text_encoder
+```
+
+### Some Raw Images
+
+Output 1 | Output 2 | Output 3 | Output 4 |
+:-------------------------: | :-------------------------:|:-------------------------: |:-------------------------:|
+![sample1](./demo_images/balayya35.png "title-1")  | ![sample2](./demo_images/balayya36.png "title-1") | ![sample3](./demo_images/balayya37.png "title-2") | ![sample4](./demo_images/balayya38.png "title-2")
+A photo of sks man in pink shirt  | A photo of sks man in green shirt and blue goggles | A photo of sks man with an angry expression | A photo of sks man near a pool 
+![sample5](./demo_images/balayya39.png "title-1")  | ![sample6](./demo_images/balayya40.png "title-1") | ![sample7](./demo_images/balayya41.png "title-2") | ![sample8](./demo_images/balayya43.png "title-2")
+sks man eating on a table  | A photo of sks man, smiling, in black shirt | A photo of sks man with white hair and white mustache | A photo of sks man waving to a crowd of people
+
+
+
+
+### IP-Adapter Full 
+Original | Before Fine-tuning           |  After Fine-tuning
+:-------------------------: | :-------------------------:|:-------------------------:
+![og](/examples/dreambooth/balakrishna_test_pngs/balayya_test1.png "title-1")  | ![test1](./demo_images/test1_sdxl.png "title-1") | ![test1_ft](./demo_images/test1_sdxl_ft.png "title-2")
+Original  | A photo of a man walking in a forest | A photo of sks man walking in a forest
+
+
+
+Original | Before Fine-tuning           |  After Fine-tuning
+:-------------------------: | :-------------------------:|:-------------------------:
+![og](/examples/dreambooth/balakrishna_test_pngs/balayya_test2.png "title-1")  | ![test2](./demo_images/test2_sdxl.png "title-1") | ![test2_ft](./demo_images/test2_sdxl_ft.png "title-2")
+Original  | A photo of a man in a suit | A photo of sks man in a suit
+
+
+Original | Before Fine-tuning           |  After Fine-tuning
+:-------------------------: | :-------------------------:|:-------------------------:
+![og](/examples/dreambooth/balakrishna_test_pngs/balayya_test3.png "title-1")  | ![test2](./demo_images/test3_sdxl.png "title-1") | ![test2_ft](./demo_images/test3_sdxl_ft.png "title-2")
+Original  | A photo of a man smiling awkwardly | A photo of sks man smiling awkwardly
+
+
+### IP-Adapter Face-ID
+
+
+
+
 ## Running the Agentic Pipeline
 
 ### Prerequisities
 
 ```
-pip install together
+pip install together python-dotenv json-repair
 ```
 
-```
-pip install python-dotenv
-```
+
+
+

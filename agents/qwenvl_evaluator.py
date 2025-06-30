@@ -3,6 +3,8 @@ from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 import torch 
 from typing import Optional
+from system_prompts import QWEN_SYSPROMPT_MULTIQ
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -31,6 +33,15 @@ def get_evaluation (generated_image_path: str,
     if guiding_image_path:
         messages = [
             {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": QWEN_SYSPROMPT_MULTIQ
+                    }
+                ]
+            },
+            {
                 "role": "user",
                 "content": [
                     {"type": "image", "image": generated_image_path},
@@ -41,13 +52,22 @@ def get_evaluation (generated_image_path: str,
         ]
     else:
         messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": generated_image_path},
-                {"type": "text", "text": evaluation_prompt},
-            ],
-        }
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": QWEN_SYSPROMPT_MULTIQ
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": generated_image_path},
+                    {"type": "text", "text": evaluation_prompt},
+                ],
+            }
         ]
 
     text = processor.apply_chat_template(

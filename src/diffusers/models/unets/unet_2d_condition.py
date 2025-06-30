@@ -965,7 +965,7 @@ class UNet2DConditionModel(
             aug_emb = self.add_embedding(text_embs, image_embs)
         elif self.config.addition_embed_type == "text_time":
             # SDXL - style
-            print(f"ADDED COND KWARGS: {added_cond_kwargs}")
+            # print(f"ADDED COND KWARGS: {added_cond_kwargs}")
             if "text_embeds" not in added_cond_kwargs:
                 raise ValueError(
                     f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `text_embeds` to be passed in `added_cond_kwargs`"

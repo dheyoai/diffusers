@@ -49,6 +49,7 @@ from diffusers import (
     DDPMScheduler,
     DiffusionPipeline,
     StableDiffusionPipeline,
+    StableDiffusionXLPipeline,
     UNet2DConditionModel,
     DEISMultistepScheduler
 )

@@ -196,20 +196,20 @@ sks man eating on a table  | A photo of sks man, smiling, in black shirt | A pho
 ### IP-Adapter Full 
 Original | Before Fine-tuning           |  After Fine-tuning
 :-------------------------: | :-------------------------:|:-------------------------:
-![og](/examples/dreambooth/balakrishna_test_pngs/balayya_test1.png "title-1")  | ![test1](./demo_images/test1_sdxl.png "title-1") | ![test1_ft](./demo_images/test1_sdxl_ft.png "title-2")
+![og](/examples/dreambooth/balakrishna_test_pngs/balayya_test1.png "title-1")  | ![test1](./demo_images/test1_sdxl.png "title-1") | ![test1_ft](./demo_images/test1_ft_sdxl.png "title-2")
 Original  | A photo of a man walking in a forest | A photo of sks man walking in a forest
 
 
 
 Original | Before Fine-tuning           |  After Fine-tuning
 :-------------------------: | :-------------------------:|:-------------------------:
-![og](/examples/dreambooth/balakrishna_test_pngs/balayya_test2.png "title-1")  | ![test2](./demo_images/test2_sdxl.png "title-1") | ![test2_ft](./demo_images/test2_sdxl_ft.png "title-2")
+![og](/examples/dreambooth/balakrishna_test_pngs/balayya_test2.png "title-1")  | ![test2](./demo_images/test2_sdxl.png "title-1") | ![test2_ft](./demo_images/test2_ft_sdxl.png "title-2")
 Original  | A photo of a man in a suit | A photo of sks man in a suit
 
 
 Original | Before Fine-tuning           |  After Fine-tuning
 :-------------------------: | :-------------------------:|:-------------------------:
-![og](/examples/dreambooth/balakrishna_test_pngs/balayya_test3.png "title-1")  | ![test2](./demo_images/test3_sdxl.png "title-1") | ![test2_ft](./demo_images/test3_sdxl_ft.png "title-2")
+![og](/examples/dreambooth/balakrishna_test_pngs/balayya_test3.png "title-1")  | ![test3](./demo_images/test3_sdxl.png "title-1") | ![test3_ft](./demo_images/test3_ft_sdxl.png "title-2")
 Original  | A photo of a man smiling awkwardly | A photo of sks man smiling awkwardly
 
 

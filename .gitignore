@@ -196,3 +196,12 @@ examples/dreambooth/reali*
 .env
 SimSun*
 *sdxl_*
+./examples/dreambooth/concepts_list.json
+inpainting_example.py 
+*_dataset
+inpainting_assets/*
+what_worked_what_not_worked.md
+examples/dreambooth/concepts_list.json
+examples/dreambooth/train_dreambooth_multi_prompt_sdxl.py
+instants
+inpainting_assets

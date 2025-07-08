@@ -1,6 +1,14 @@
 #### This sole file should handle guided image-gen with controlnet and ipadapter and may be insightface (in future)
 
-from diffusers import DiffusionPipeline, UNet2DConditionModel, PNDMScheduler, StableDiffusion3Pipeline, StableDiffusionPipeline
+from diffusers import (
+    DiffusionPipeline, 
+    UNet2DConditionModel, 
+    PNDMScheduler, 
+    StableDiffusion3Pipeline, 
+    StableDiffusionPipeline, 
+    StableDiffusionXLPipeline
+)
+
 from transformers import CLIPTextModel
 import torch
 from diffusers.utils import load_image
@@ -17,8 +25,11 @@ def generate_image(image_path_to_save: str,
                    guidance_scale: Optional[float] = 7.5,
                    negative_prompt: Optional[str] = None):
     
-    pipeline = StableDiffusion3Pipeline.from_pretrained(
-        model_path, dtype=torch.bfloat16,
+    # pipeline = StableDiffusion3Pipeline.from_pretrained(
+    #     model_path, dtype=torch.bfloat16,
+    # ).to(device)
+    pipeline = StableDiffusionXLPipeline.from_pretrained(
+        model_path, dtype=torch.float16,
     ).to(device)
 
     image = pipeline(prompt=prompt, 

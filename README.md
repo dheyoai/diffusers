@@ -223,7 +223,7 @@ Original  | A photo of a man smiling awkwardly | A photo of sks man smiling awkw
 ### Prerequisities
 
 ```
-pip install together python-dotenv json-repair
+pip install together python-dotenv json-repair datasets
 ```
 
 

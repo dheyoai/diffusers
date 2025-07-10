@@ -205,3 +205,13 @@ examples/dreambooth/concepts_list.json
 examples/dreambooth/train_dreambooth_multi_prompt_sdxl.py
 instants
 inpainting_assets
+*rama*
+clip_simil*.csv
+clip_simil*.png
+filter_images_on_clip_score.py
+*.csv
+get_clip_scores.py
+*dataset_2
+synthetic_data_generation
+face_detection
+filtered_images_no_lowest

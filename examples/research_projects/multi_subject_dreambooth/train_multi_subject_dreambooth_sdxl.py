@@ -518,6 +518,25 @@ def parse_args(input_args=None):
         ],
         help="The image interpolation method to use for resizing images.",
     )
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=None,
+        help="The directory where the downloaded models and datasets will be stored.",
+    )
+    parser.add_argument(
+        "--image_column",
+        type=str,
+        default="image",
+        help="The column of the dataset containing the target image.",
+    )
+    parser.add_argument(
+        "--caption_column",
+        type=str,
+        default=None,
+        help="The column of the dataset containing the instance prompt for each image",
+    )
+
 
     if input_args:
         args = parser.parse_args(input_args)
@@ -590,6 +609,7 @@ class DreamBoothDataset(Dataset):
         self,
         instance_data_root,
         instance_prompt,
+        dataset_names,
         tokenizer_one,
         tokenizer_two,
         class_data_root=None,
@@ -605,11 +625,13 @@ class DreamBoothDataset(Dataset):
 
         self.instance_data_root = []
         self.instance_images_path = []
+        self.instance_images = []
         self.num_instance_images = []
         self.crop_top_lefts = []
         self.original_sizes = []
 
         self.instance_prompt = []
+        self.custom_instance_prompts = []
         self.class_data_root = [] if class_data_root is not None else None
         self.class_images_path = []
         self.num_class_images = []
@@ -625,26 +647,71 @@ class DreamBoothDataset(Dataset):
         train_flip = transforms.RandomHorizontalFlip(p=1.0)
 
 
-        for i in range(len(instance_data_root)):
-            self.instance_data_root.append(Path(instance_data_root[i]))
-            if not self.instance_data_root[i].exists():
-                raise ValueError("Instance images root doesn't exists.")
+        if dataset_names and args.caption_column and args.image_column:
+            for i in range(len(dataset_names)):
+                try:
+                    from datasets import load_dataset
+                except ImportError:
+                    raise ImportError(
+                        "You are trying to load your data using the datasets library. If you wish to train using custom "
+                        "captions please install the datasets library: `pip install datasets`."
+                    )
+                dataset = load_dataset(
+                    dataset_names[i],
+                    # args.dataset_config_name,
+                    cache_dir=args.cache_dir,
+                )
+                column_names = dataset["train"].column_names
+                image_column = args.image_column
+                if image_column not in column_names:
+                    raise ValueError(
+                        f"`--image_column` value '{args.image_column}' not found in dataset columns."
+                    )
+                # self.instance_images.append(dataset["train"][image_column])
+                instance_images = dataset["train"][image_column]
+                self.instance_images.append(instance_images)
+                self.num_instance_images.append(len(instance_images))
+                self._length += self.num_instance_images[i]
 
-            self.instance_images_path.append(list(Path(instance_data_root[i]).iterdir()))
-            self.num_instance_images.append(len(self.instance_images_path[i]))
-            instance_images = [Image.open(path) for path in list(Path(self.instance_data_root[i]).iterdir())]
-            self.instance_prompt.append(instance_prompt[i])
-            self._length += self.num_instance_images[i]
 
-            self.instance_images = []
-            for img in instance_images:
-                self.instance_images.extend(itertools.repeat(img, repeats))
+                if args.caption_column not in column_names:
+                    raise ValueError(
+                        f"`--caption_column` value '{args.caption_column}' not found in dataset columns."
+                    )
+                custom_instance_prompts = dataset["train"][args.caption_column]
+                temp_custom_instance_prompts = []
+                for caption in custom_instance_prompts:
+                    temp_custom_instance_prompts.extend(itertools.repeat(caption, repeats))
+
+                self.custom_instance_prompts.append(temp_custom_instance_prompts)
+
+        # import pdb; pdb.set_trace()
+
+        else:
+            for i in range(len(instance_data_root)):
+                self.instance_data_root.append(Path(instance_data_root[i]))
+                if not self.instance_data_root[i].exists():
+                    raise ValueError("Instance images root doesn't exists.")
+
+                # self.instance_images_path.append(list(Path(instance_data_root[i]).iterdir()))
+                # self.num_instance_images.append(len(self.instance_images_path[i]))
+                instance_images = [Image.open(path) for path in list(Path(self.instance_data_root[i]).iterdir())]
+                self.num_instance_images.append(len(instance_images))
+                self.instance_prompt.append(instance_prompt[i])
+                # import pdb; pdb.set_trace()
+                self._length += self.num_instance_images[i]
+
+                self.instance_images.append(instance_images)
 
             ## Add step by step image transforms and save them in the required lists
+
+
+        for i in range(len(self.instance_images)):
+            instance_images = self.instance_images[i]
             temp_crop_top_lefts = []
             temp_original_sizes = []
 
-            for image in self.instance_images:
+            for image in instance_images:
                 image = exif_transpose(image)
                 if not image.mode == "RGB":
                     image = image.convert("RGB")
@@ -667,6 +734,7 @@ class DreamBoothDataset(Dataset):
                 # image = train_transforms(image)
                 # self.pixel_values.append(image)
 
+            # import pdb; pdb.set_trace()
 
             if class_data_root is not None:
                 self.class_data_root.append(Path(class_data_root[i]))
@@ -693,8 +761,11 @@ class DreamBoothDataset(Dataset):
 
     def __getitem__(self, index):
         example = {}
-        for i in range(len(self.instance_images_path)):
-            instance_image = Image.open(self.instance_images_path[i][index % self.num_instance_images[i]])
+        # for i in range(len(self.instance_images_path)):
+        for i in range(len(self.instance_images)):
+            # instance_image = Image.open(self.instance_images_path[i][index % self.num_instance_images[i]])
+            instance_image = self.instance_images[i][index % self.num_instance_images[i]]
+
             original_size = self.original_sizes[i][index % self.num_instance_images[i]]
             crop_top_left = self.crop_top_lefts[i][index % self.num_instance_images[i]]
             if not instance_image.mode == "RGB":
@@ -704,7 +775,7 @@ class DreamBoothDataset(Dataset):
             example[f"crop_top_lefts_{i}"] = crop_top_left
 
             example[f"instance_prompt_ids_{i}"] = self.tokenizer_one(
-                self.instance_prompt[i],
+                self.custom_instance_prompts[i][index % self.num_instance_images[i]] if self.custom_instance_prompts else self.instance_prompt[i],
                 truncation=True,
                 padding="max_length",
                 max_length=self.tokenizer_one.model_max_length,
@@ -712,7 +783,7 @@ class DreamBoothDataset(Dataset):
             ).input_ids
 
             example[f"instance_prompt_ids_2_{i}"] = self.tokenizer_two(
-                self.instance_prompt[i],
+                self.custom_instance_prompts[i][index % self.num_instance_images[i]] if self.custom_instance_prompts else self.instance_prompt[i],
                 truncation=True,
                 padding="max_length",
                 max_length=self.tokenizer_two.model_max_length,
@@ -879,6 +950,7 @@ def main(args):
 
     instance_data_dir = []
     instance_prompt = []
+    dataset_names = [] ## new
     class_data_dir = [] if args.with_prior_preservation else None
     class_prompt = [] if args.with_prior_preservation else None
     if args.concepts_list:
@@ -892,9 +964,12 @@ def main(args):
             args.validation_inference_steps = []
             args.validation_guidance_scale = []
 
-        for concept in concepts_list:
-            instance_data_dir.append(concept["instance_data_dir"])
-            instance_prompt.append(concept["instance_prompt"])
+        for concept in concepts_list: 
+            if concept.get("dataset_name"):
+                dataset_names.append(concept["dataset_name"]) ## new
+            else:
+                instance_data_dir.append(concept["instance_data_dir"])
+                instance_prompt.append(concept["instance_prompt"])
 
             if args.with_prior_preservation:
                 try:
@@ -923,12 +998,14 @@ def main(args):
                 args.validation_guidance_scale.append(concept.get("validation_guidance_scale", 7.5))
     else:
         # Parse instance and class inputs, and double check that lengths match
-        instance_data_dir = args.instance_data_dir.split(",")
-        instance_prompt = args.instance_prompt.split(",")
-        assert all(x == len(instance_data_dir) for x in [len(instance_data_dir), len(instance_prompt)]), (
-            "Instance data dir and prompt inputs are not of the same length."
-        )
+        if not dataset_names: ## check only if HF dataset names are not provided
+            instance_data_dir = args.instance_data_dir.split(",")
+            instance_prompt = args.instance_prompt.split(",")
+            assert all(x == len(instance_data_dir) for x in [len(instance_data_dir), len(instance_prompt)]), (
+                "Instance data dir and prompt inputs are not of the same length. Provide HF dataset names to all or none of the subjects"
+            )
 
+        ## need to modify this when HF dataset support is added
         if args.with_prior_preservation:
             class_data_dir = args.class_data_dir.split(",")
             class_prompt = args.class_prompt.split(",")
@@ -1134,6 +1211,7 @@ def main(args):
     train_dataset = DreamBoothDataset(
         instance_data_root=instance_data_dir,
         instance_prompt=instance_prompt,
+        dataset_names=dataset_names,
         class_data_root=class_data_dir,
         class_prompt=class_prompt,
         tokenizer_one=tokenizer_one,

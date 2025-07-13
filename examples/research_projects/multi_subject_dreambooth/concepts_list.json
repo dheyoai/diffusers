@@ -5,7 +5,8 @@
         "instance_data_dir":    "/shareddata/dheyo/shivanvitha/diffusers/synthetic_man_dataset_2/images",
         "class_data_dir":       "/shareddata/dheyo/shivanvitha/diffusers/examples/research_projects/dummy1",
         "validation_prompt":    "a photo of sny man",
-        "validation_negative_prompt": "black and white"
+        "validation_negative_prompt": "black and white",
+        "dataset_name": "shivanvitha21/synthetic_man_dataset_v2"
     },
     {
         "instance_prompt":      "a photo of rnp man",
@@ -16,6 +17,7 @@
         "validation_negative_prompt": "an old man",
         "validation_guidance_scale": 20,
         "validation_number_images": 3,
-        "validation_inference_steps": 30
+        "validation_inference_steps": 30,
+        "dataset_name": "shivanvitha21/rc_ntr_prabhas_dataset_v1"
     }
 ]

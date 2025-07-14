@@ -1595,6 +1595,7 @@ def main(args):
         if args.train_text_encoder:
             text_encoder.train()
 
+        import pdb; pdb.set_trace()
         for step, batch in enumerate(train_dataloader):
             models_to_accumulate = [transformer]
             if args.train_text_encoder:

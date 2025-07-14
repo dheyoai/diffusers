@@ -20,7 +20,7 @@ import torch
 from transformers import AutoTokenizer, UMT5EncoderModel
 
 from ...callbacks import MultiPipelineCallbacks, PipelineCallback
-from ...loaders import WanLoraLoaderMixin
+from ...loaders import WanLoraLoaderMixin, WanLoraLoaderMixinWrapper
 from ...models import AutoencoderKLWan, WanTransformer3DModel
 from ...schedulers import FlowMatchEulerDiscreteScheduler
 from ...utils import is_ftfy_available, is_torch_xla_available, logging, replace_example_docstring
@@ -92,7 +92,7 @@ def prompt_clean(text):
     return text
 
 
-class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
+class WanPipeline(DiffusionPipeline, WanLoraLoaderMixinWrapper):
     r"""
     Pipeline for text-to-video generation using Wan.
 

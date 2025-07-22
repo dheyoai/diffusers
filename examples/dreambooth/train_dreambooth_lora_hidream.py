@@ -414,7 +414,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--rank",
         type=int,
-        default=4,
+        default=64,
         help=("The dimension of the LoRA update matrices."),
     )
 
@@ -982,6 +982,39 @@ def main(args):
     if args.seed is not None:
         set_seed(args.seed)
 
+    tokenizer_four = AutoTokenizer.from_pretrained(
+        args.pretrained_tokenizer_4_name_or_path,
+        revision=args.revision,
+    )
+    tokenizer_four.pad_token = tokenizer_four.eos_token
+
+    text_encoder_cls_one = import_model_class_from_model_name_or_path(
+        args.pretrained_model_name_or_path, args.revision
+    )
+    text_encoder_cls_two = import_model_class_from_model_name_or_path(
+        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
+    )
+    text_encoder_cls_three = import_model_class_from_model_name_or_path(
+        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_3"
+    )
+
+    # For mixed precision training we cast all non-trainable weights (vae, text_encoder and transformer) to half-precision
+    # as these weights are only used for inference, keeping weights in full precision is not required.
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+
+    # Load scheduler and models
+    noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        args.pretrained_model_name_or_path, subfolder="scheduler", revision=args.revision, shift=3.0
+    )
+    noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+    text_encoder_one, text_encoder_two, text_encoder_three, text_encoder_four = load_text_encoders(
+        text_encoder_cls_one, text_encoder_cls_two, text_encoder_cls_three
+    )
+
     # Generate class images if prior preservation is enabled.
     if args.with_prior_preservation:
         class_images_dir = Path(args.class_data_dir)
@@ -995,6 +1028,8 @@ def main(args):
                 torch_dtype=torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16,
                 revision=args.revision,
                 variant=args.variant,
+                tokenizer_4=tokenizer_four,
+                text_encoder_4=text_encoder_four,
             )
             pipeline.set_progress_bar_config(disable=True)
 
@@ -1049,39 +1084,39 @@ def main(args):
         revision=args.revision,
     )
 
-    tokenizer_four = AutoTokenizer.from_pretrained(
-        args.pretrained_tokenizer_4_name_or_path,
-        revision=args.revision,
-    )
-    tokenizer_four.pad_token = tokenizer_four.eos_token
+    # tokenizer_four = AutoTokenizer.from_pretrained(
+    #     args.pretrained_tokenizer_4_name_or_path,
+    #     revision=args.revision,
+    # )
+    # tokenizer_four.pad_token = tokenizer_four.eos_token
 
     # import correct text encoder classes
-    text_encoder_cls_one = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision
-    )
-    text_encoder_cls_two = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
-    )
-    text_encoder_cls_three = import_model_class_from_model_name_or_path(
-        args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_3"
-    )
+    # text_encoder_cls_one = import_model_class_from_model_name_or_path(
+    #     args.pretrained_model_name_or_path, args.revision
+    # )
+    # text_encoder_cls_two = import_model_class_from_model_name_or_path(
+    #     args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_2"
+    # )
+    # text_encoder_cls_three = import_model_class_from_model_name_or_path(
+    #     args.pretrained_model_name_or_path, args.revision, subfolder="text_encoder_3"
+    # )
 
-    # For mixed precision training we cast all non-trainable weights (vae, text_encoder and transformer) to half-precision
-    # as these weights are only used for inference, keeping weights in full precision is not required.
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
+    # # For mixed precision training we cast all non-trainable weights (vae, text_encoder and transformer) to half-precision
+    # # as these weights are only used for inference, keeping weights in full precision is not required.
+    # weight_dtype = torch.float32
+    # if accelerator.mixed_precision == "fp16":
+    #     weight_dtype = torch.float16
+    # elif accelerator.mixed_precision == "bf16":
+    #     weight_dtype = torch.bfloat16
 
-    # Load scheduler and models
-    noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="scheduler", revision=args.revision, shift=3.0
-    )
-    noise_scheduler_copy = copy.deepcopy(noise_scheduler)
-    text_encoder_one, text_encoder_two, text_encoder_three, text_encoder_four = load_text_encoders(
-        text_encoder_cls_one, text_encoder_cls_two, text_encoder_cls_three
-    )
+    # # Load scheduler and models
+    # noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+    #     args.pretrained_model_name_or_path, subfolder="scheduler", revision=args.revision, shift=3.0
+    # )
+    # noise_scheduler_copy = copy.deepcopy(noise_scheduler)
+    # text_encoder_one, text_encoder_two, text_encoder_three, text_encoder_four = load_text_encoders(
+    #     text_encoder_cls_one, text_encoder_cls_two, text_encoder_cls_three
+    # )
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="vae",

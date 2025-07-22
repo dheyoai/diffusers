@@ -1,6 +1,3 @@
-- Add HF dataset compatibility for instance data points in multi-subject dreambooth SDXL
-- Take care of time_ids based on the above 
-- Add support for WAN 2.1 diffusers dreambooth training (similar dir structure to SD 3.5 M/L)
-- Create a proper script to inference from older checkpoints
-- Handle resolution properly based on the WAN model in dreambooth FT 
-- Add LoRA support for the WAN 2.1 dreambooth 
+- Fix bugs in OmniGen2 LoRA dreambooth (single subject)
+- HiDream LoRA Multi-subject pipeline
+- Add docs for (1)

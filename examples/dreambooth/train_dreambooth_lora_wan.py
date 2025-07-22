@@ -24,7 +24,7 @@ import shutil
 import warnings
 from contextlib import nullcontext
 from pathlib import Path
-
+import torch.nn.functional as F
 import numpy as np
 import torch
 import torch.utils.checkpoint
@@ -42,7 +42,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.transforms.functional import crop
 from tqdm.auto import tqdm
-from transformers import CLIPTokenizer, PretrainedConfig, T5TokenizerFast
+from transformers import CLIPTokenizer, PretrainedConfig, T5TokenizerFast, AutoTokenizer
 
 import diffusers
 from diffusers import (
@@ -177,6 +177,7 @@ def load_text_encoders(class_one):
     text_encoder_one = class_one.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
     )
+    # import pdb; pdb.set_trace()
     return text_encoder_one
 
 
@@ -349,6 +350,18 @@ def parse_args(input_args=None):
         help="A prompt that is used during validation to verify that the model is learning.",
     )
     parser.add_argument(
+        "--negative_prompt",
+        type=str,
+        default="extra arms, extra long legs, extra fingers, extra legs, mutated hands, fused fingers, cross-eyed, long head, deformed hands, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality",
+        help="A common negative prompt",
+    )
+    parser.add_argument(
+        "--prompt_suffix",
+        type=str,
+        default=";realistic, detailed; high detailed skin, 8k uhd, dslr, soft lighting, high quality, film grain, Fujifilm XT3",
+        help="A common negative prompt",
+    )
+    parser.add_argument(
         "--num_validation_images",
         type=int,
         default=4,
@@ -366,7 +379,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--rank",
         type=int,
-        default=4,
+        default=64,
         help=("The dimension of the LoRA update matrices."),
     )
 
@@ -391,7 +404,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="sd3-dreambooth",
+        default="wan_lora_dreambooth",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
@@ -402,6 +415,24 @@ def parse_args(input_args=None):
         help=(
             "The resolution for input images, all the images in the train/validation dataset will be resized to this"
             " resolution"
+        ),
+    )
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=832,
+        help=(
+            "The width for input images, all the images in the train/validation dataset will be resized to this"
+            " width"
+        ),
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=480,
+        help=(
+            "The height for input images, all the images in the train/validation dataset will be resized to this"
+            " height"
         ),
     )
     parser.add_argument(
@@ -483,7 +514,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--text_encoder_lr",
         type=float,
-        default=5e-6,
+        default=2e-6,
         help="Text encoder learning rate to use.",
     )
     parser.add_argument(
@@ -522,7 +553,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--weighting_scheme",
         type=str,
-        default="logit_normal",
+        default=None,
         choices=["sigma_sqrt", "logit_normal", "mode", "cosmap"],
     )
     parser.add_argument(
@@ -540,7 +571,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--precondition_outputs",
         type=int,
-        default=1,
+        default=0,
         help="Flag indicating if we are preconditioning the model outputs or not as done in EDM. This affects how "
         "model `target` is calculated.",
     )
@@ -656,6 +687,17 @@ def parse_args(input_args=None):
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
         ),
     )
+
+    parser.add_argument(
+        "--image_interpolation_mode",
+        type=str,
+        default="lanczos",
+        choices=[
+            f.lower() for f in dir(transforms.InterpolationMode) if not f.startswith("__") and not f.endswith("__")
+        ],
+        help="The image interpolation method to use for resizing images.",
+    )
+
     parser.add_argument(
         "--mixed_precision",
         type=str,
@@ -806,8 +848,14 @@ class DreamBoothDataset(Dataset):
             self.instance_images.extend(itertools.repeat(img, repeats))
 
         self.pixel_values = []
-        train_resize = transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR)
-        train_crop = transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
+
+        interpolation = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper(), None)
+        if interpolation is None:
+            raise ValueError(f"Unsupported interpolation mode {interpolation=}.")
+        
+        # train_resize = transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR)
+        train_resize = transforms.Resize((args.height, args.width), interpolation=interpolation)
+        # train_crop = transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
         train_flip = transforms.RandomHorizontalFlip(p=1.0)
         train_transforms = transforms.Compose(
             [
@@ -820,16 +868,18 @@ class DreamBoothDataset(Dataset):
             if not image.mode == "RGB":
                 image = image.convert("RGB")
             image = train_resize(image)
+
+            # import pdb; pdb.set_trace()
             if args.random_flip and random.random() < 0.5:
                 # flip
                 image = train_flip(image)
-            if args.center_crop:
-                y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
-                x1 = max(0, int(round((image.width - args.resolution) / 2.0)))
-                image = train_crop(image)
-            else:
-                y1, x1, h, w = train_crop.get_params(image, (args.resolution, args.resolution))
-                image = crop(image, y1, x1, h, w)
+            # if args.center_crop:
+            #     y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
+            #     x1 = max(0, int(round((image.width - args.resolution) / 2.0)))
+            #     image = train_crop(image)
+            # else:
+            #     y1, x1, h, w = train_crop.get_params(image, (args.resolution, args.resolution))
+            #     image = crop(image, y1, x1, h, w)
             image = train_transforms(image)
             self.pixel_values.append(image)
 
@@ -850,8 +900,8 @@ class DreamBoothDataset(Dataset):
 
         self.image_transforms = transforms.Compose(
             [
-                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
+                transforms.Resize((args.height, args.width), interpolation=interpolation),
+                # transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5], [0.5]),
             ]
@@ -964,7 +1014,7 @@ def encode_prompt(
     prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
     prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
 
-    # No pooled embeddings for UMT5, return None for compatibility
+    # No pooled embeddings for UMT5
     return prompt_embeds
 
 
@@ -1055,11 +1105,14 @@ def main(args):
             for example in tqdm(
                 sample_dataloader, desc="Generating class images", disable=not accelerator.is_local_main_process
             ):
-                image = pipeline(example["prompt"], num_frames=1).frames[0][0]
-                output_image = Image.fromarray((image * 255).astype('uint8'))
-                hash_image = insecure_hashlib.sha1(image.tobytes()).hexdigest()
-                image_filename = class_images_dir / f"{example['index'][0] + cur_class_images}-{hash_image}.jpg"
-                output_image.save(image_filename)
+                prompts_ = [ prompt + args.prompt_suffix for prompt in example["prompt"] ]
+                images = pipeline(prompts_, num_frames=1, negative_prompt=args.negative_prompt).frames
+                for i, image in enumerate(images):
+                    image = image[0]
+                    output_image = Image.fromarray((image * 255).astype('uint8'))
+                    hash_image = insecure_hashlib.sha1(image.tobytes()).hexdigest()
+                    image_filename = class_images_dir / f"{example['index'][i] + cur_class_images}-{hash_image}.jpg"
+                    output_image.save(image_filename)
                 # for i, image in enumerate(images):
                 #     hash_image = insecure_hashlib.sha1(image.tobytes()).hexdigest()
                 #     image_filename = class_images_dir / f"{example['index'][i] + cur_class_images}-{hash_image}.jpg"
@@ -1080,7 +1133,12 @@ def main(args):
             ).repo_id
 
     # Load the tokenizers
-    tokenizer_one = T5TokenizerFast.from_pretrained(
+    # tokenizer_one = T5TokenizerFast.from_pretrained(
+    #     args.pretrained_model_name_or_path,
+    #     subfolder="tokenizer",
+    #     revision=args.revision,
+    # )
+    tokenizer_one = AutoTokenizer.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="tokenizer",
         revision=args.revision,
@@ -1158,7 +1216,17 @@ def main(args):
             "attn2.to_out.0",
             "attn2.to_q",
             "attn2.to_v",
+            "ffn.net.0.proj",
+            "ffn.net.2"
         ]
+        # target_modules = [
+        #     "to_k",
+        #     "to_out.0",
+        #     "to_q",
+        #     "to_v",
+        #     "ff.net.0.proj",
+        #     "ff.net.2"
+        # ]
         
     if args.lora_blocks is not None:
         target_blocks = [int(block.strip()) for block in args.lora_blocks.split(",")]
@@ -1175,6 +1243,8 @@ def main(args):
         target_modules=target_modules,
     )
     transformer.add_adapter(transformer_lora_config)
+    total_parameters = sum(p.numel() for p in transformer.parameters())
+    print(f"Number of trainable transformer parameters: {sum(p.numel() for p in transformer.parameters() if p.requires_grad)}/{total_parameters}")
 
     if args.train_text_encoder:
         text_lora_config = LoraConfig(
@@ -1186,6 +1256,10 @@ def main(args):
             target_modules=["q", "k", "v", "o"],
         )
         text_encoder_one.add_adapter(text_lora_config) ### WHY ARE THEY NOT TRAINING T5 XXL?
+        total_parameters = sum(p.numel() for p in text_encoder_one.parameters())
+
+        print(f"Number of trainable text encoder parameters: {sum(p.numel() for p in text_encoder_one.parameters() if p.requires_grad)}/{total_parameters}")
+        # import pdb; pdb.set_trace()
 
     def unwrap_model(model):
         model = accelerator.unwrap_model(model)
@@ -1375,7 +1449,7 @@ def main(args):
             # changes the learning rate of text_encoder_parameters_one and text_encoder_parameters_two to be
             # --learning_rate
             params_to_optimize[1]["lr"] = args.learning_rate
-            params_to_optimize[2]["lr"] = args.learning_rate
+            # params_to_optimize[2]["lr"] = args.learning_rate
 
         optimizer = optimizer_class(
             params_to_optimize,
@@ -1415,7 +1489,7 @@ def main(args):
         def compute_text_embeddings(prompt, text_encoders, tokenizers):
             with torch.no_grad():
                 prompt_embeds = encode_prompt(
-                    text_encoders, tokenizers, prompt, args.max_sequence_length
+                    text_encoders, tokenizers, prompt, args.max_sequence_length, accelerator.device
                 )
                 prompt_embeds = prompt_embeds.to(accelerator.device)
             return prompt_embeds
@@ -1517,7 +1591,7 @@ def main(args):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        tracker_name = "dreambooth-sd3-lora"
+        tracker_name = "wan-lora"
         accelerator.init_trackers(tracker_name, config=vars(args))
 
     # Train!
@@ -1581,7 +1655,7 @@ def main(args):
     #         sigma = sigma.unsqueeze(-1)
     #     return sigma
 
-    def get_sigmas(timesteps, n_dim=4, dtype=torch.float32, device='cpu', flow_shift=3.0, num_train_timesteps=1000):
+    def get_sigmas_2(timesteps, n_dim=4, dtype=torch.float32, device='cpu', flow_shift=3.0, num_train_timesteps=1000):
         # Compute flow-based sigmas for UniPCMultistepScheduler with use_flow_sigmas=True
         alphas = np.linspace(1, 1 / num_train_timesteps, num_train_timesteps + 1)
         sigmas = 1.0 - alphas
@@ -1589,6 +1663,7 @@ def main(args):
         sigmas = np.flip(sigmas)[:-1]  # Reverse and remove the last element (sigma=0)
         
         # Convert to tensor and move to the specified device
+        sigmas = np.ascontiguousarray(sigmas)
         sigmas = torch.tensor(sigmas, dtype=dtype, device=device)
         
         # Map input timesteps to sigma indices
@@ -1600,6 +1675,18 @@ def main(args):
         while len(sigma.shape) < n_dim:
             sigma = sigma.unsqueeze(-1)
         
+        return sigma
+
+    def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
+        sigmas = noise_scheduler.sigmas.to(device=accelerator.device, dtype=dtype)
+        schedule_timesteps = noise_scheduler.timesteps.to(accelerator.device)
+        timesteps = timesteps.to(accelerator.device)
+
+        step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
+
+        sigma = sigmas[step_indices].flatten()
+        while len(sigma.shape) < n_dim:
+            sigma = sigma.unsqueeze(-1)
         return sigma
 
 
@@ -1630,6 +1717,8 @@ def main(args):
             #  AttributeError: 'UMT5EncoderModel' object has no attribute 'text_model' ???
             # import pdb; pdb.set_trace()
             accelerator.unwrap_model(text_encoder_one).shared.requires_grad_(True)
+            accelerator.unwrap_model(text_encoder_one).encoder.embed_tokens.requires_grad_(True)
+
 
         for step, batch in enumerate(train_dataloader):
             models_to_accumulate = [transformer]
@@ -1645,6 +1734,7 @@ def main(args):
                             prompts, text_encoders, tokenizers
                         )
                     else:
+                        # import pdb; pdb.set_trace()
                         tokens_one = tokenize_prompt(tokenizer_one, prompts)
                         prompt_embeds = encode_prompt(
                             text_encoder=[text_encoder_one],
@@ -1688,15 +1778,28 @@ def main(args):
                     logit_std=args.logit_std,
                     mode_scale=args.mode_scale,
                 )
-                # indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
-                # timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
+                indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
+                timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
+                # import pdb; pdb.set_trace()
+                # timesteps = get_timesteps(u, noise_scheduler_copy, noise_scheduler_copy.config.num_train_timesteps, device=accelerator.device)
 
-                timesteps = get_timesteps(u, noise_scheduler, noise_scheduler_copy.config.num_train_timesteps, device="cuda")
                 # Add noise according to flow matching.
                 # zt = (1 - texp) * x + texp * z1
-                sigmas = get_sigmas(timesteps, n_dim=model_input.ndim, dtype=model_input.dtype)
-                noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
+                # sigmas = get_sigmas_2(timesteps, 
+                #                     n_dim=model_input.ndim, 
+                #                     dtype=model_input.dtype, 
+                #                     device=accelerator.device,
+                #                     flow_shift=noise_scheduler_copy.config.flow_shift,
+                #                     num_train_timesteps=noise_scheduler_copy.config.num_train_timesteps
+                #                     )
+                
 
+                sigmas = get_sigmas(timesteps=timesteps, n_dim=len(model_input.shape), dtype=model_input.dtype)
+                # noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
+                
+                noisy_model_input = noise_scheduler.add_noise(model_input, noise, timesteps)
+
+                # import pdb; pdb.set_trace()
                 # Predict the noise residual
                 model_pred = transformer(
                     hidden_states=noisy_model_input,
@@ -1713,7 +1816,7 @@ def main(args):
                 # these weighting schemes use a uniform timestep sampling
                 # and instead post-weight the loss
                 weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
-
+                # weighting = None
                 # flow matching loss
                 if args.precondition_outputs:
                     target = model_input
@@ -1725,21 +1828,28 @@ def main(args):
                     model_pred, model_pred_prior = torch.chunk(model_pred, 2, dim=0)
                     target, target_prior = torch.chunk(target, 2, dim=0)
 
-                    # Compute prior loss
-                    prior_loss = torch.mean(
-                        (weighting.float() * (model_pred_prior.float() - target_prior.float()) ** 2).reshape(
-                            target_prior.shape[0], -1
-                        ),
-                        1,
-                    )
-                    prior_loss = prior_loss.mean()
+                    if weighting is not None:
+                        prior_loss = torch.mean(
+                            (weighting.float() * (model_pred_prior.float() - target_prior.float()) ** 2).reshape(
+                                target_prior.shape[0], -1
+                            ),
+                            1,
+                        )
+                        prior_loss = prior_loss.mean()
+                    else:
+                        prior_loss = F.mse_loss(model_pred_prior.float(), target_prior.float(), reduction="mean")
 
                 # Compute regular loss.
-                loss = torch.mean(
-                    (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
-                    1,
-                )
-                loss = loss.mean()
+                if weighting is not None:
+                    loss = torch.mean(
+                        (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
+                        1,
+                    )
+                    loss = loss.mean()
+                
+                else:
+                    loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                    # loss = loss.mean()
 
                 if args.with_prior_preservation:
                     # Add the prior loss to the instance loss.
@@ -1815,7 +1925,7 @@ def main(args):
                     variant=args.variant,
                     torch_dtype=weight_dtype,
                 )
-                pipeline_args = {"prompt": args.validation_prompt, "num_frames": 1}
+                pipeline_args = {"prompt": args.validation_prompt, "num_frames": 1, "negative_prompt": args.negative_prompt}
                 images = log_validation(
                     pipeline=pipeline,
                     args=args,
@@ -1836,6 +1946,8 @@ def main(args):
             transformer.to(torch.float32)
         else:
             transformer = transformer.to(weight_dtype)
+
+        # import pdb; pdb.set_trace()
         transformer_lora_layers = get_peft_model_state_dict(transformer)
 
         if args.train_text_encoder:
@@ -1864,7 +1976,8 @@ def main(args):
         # run inference
         images = []
         if args.validation_prompt and args.num_validation_images > 0:
-            pipeline_args = {"prompt": args.validation_prompt}
+            # pipeline_args = {"prompt": args.validation_prompt}
+            pipeline_args = {"prompt": args.validation_prompt, "num_frames": 1, "negative_prompt": args.negative_prompt}
             images = log_validation(
                 pipeline=pipeline,
                 args=args,

@@ -58,6 +58,8 @@ _import_structure = {
         "is_unidecode_available",
         "logging",
     ],
+    "omnigen2.models.transformers.transformer_omnigen2": [],
+    "omnigen2.pipelines.omnigen2.pipeline_omnigen2": []
 }
 
 try:
@@ -137,6 +139,16 @@ else:
             "PyramidAttentionBroadcastConfig",
             "apply_faster_cache",
             "apply_pyramid_attention_broadcast",
+        ]
+    )
+    _import_structure["omnigen2.models.transformers.transformer_omnigen2"].extend(
+        [
+            "OmniGen2Transformer2DModel"
+        ]
+    )
+    _import_structure["omnigen2.pipelines.omnigen2.pipeline_omnigen2"].extend(
+        [
+            "OmniGen2Pipeline"
         ]
     )
     _import_structure["models"].extend(
@@ -753,6 +765,12 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
             PyramidAttentionBroadcastConfig,
             apply_faster_cache,
             apply_pyramid_attention_broadcast,
+        )
+        from .omnigen2.models.transformers.transformer_omnigen2 import (
+            OmniGen2Transformer2DModel
+        )
+        from .omnigen2.pipelines.omnigen2.pipeline_omnigen2 import (
+            OmniGen2Pipeline
         )
         from .models import (
             AllegroTransformer3DModel,

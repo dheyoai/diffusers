@@ -1225,7 +1225,7 @@ def main(args):
         train_dataset,
         batch_size=args.train_batch_size,
         shuffle=True,
-        collate_fn=lambda examples: collate_fn(len(instance_data_dir), examples, args.with_prior_preservation),
+        collate_fn=lambda examples: collate_fn(len(instance_data_dir or dataset_names), examples, args.with_prior_preservation),
         num_workers=1,
     )
 

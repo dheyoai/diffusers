@@ -1,21 +1,22 @@
 [
     {
-        "instance_prompt":      "a photo of sny man",
-        "class_prompt":         "a full photo of a young brown Indian man with thick black hair and black mustache",
-        "instance_data_dir":    "/shareddata/dheyo/shivanvitha/diffusers/synthetic_man_dataset_2/images",
-        "class_data_dir":       "/shareddata/dheyo/shivanvitha/diffusers/examples/research_projects/dummy1",
-        "validation_prompt":    "a photo of sny man",
-        "validation_negative_prompt": "black and white",
-        "dataset_name": "shivanvitha21/synthetic_man_dataset_v2"
+        "instance_prompt":      "a photo of skf boy",
+        "class_prompt":         "a full photo of a 17 year old Indian boy",
+        "class_data_dir":       "/shareddata/dheyo/shivanvitha/diffusers/examples/research_projects/boy_pp_outputs",
+        "validation_prompt":    "a photo of skf boy",
+        "validation_guidance_scale": 5,
+        "validation_number_images": 3,
+        "validation_inference_steps": 30,
+        "validation_negative_prompt": "animated, cartoon, bad eyes, unibrow, extra arms, extra fingers, extra legs, mutated hands, fused fingers, long neck, cross-eyed, long head, deformed hands, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality",
+        "dataset_name": "shivanvitha21/boy_dataset_v1"
     },
     {
         "instance_prompt":      "a photo of rnp man",
-        "class_prompt":         "a full photo of a young handsome Indian man with a strong build",
-        "instance_data_dir":    "/shareddata/dheyo/shivanvitha/diffusers/rc_ntr_prabhas_dataset/images",
-        "class_data_dir":       "/shareddata/dheyo/shivanvitha/diffusers/examples/research_projects/dummy2",
-        "validation_prompt":    "a photo of rnp man angry",
-        "validation_negative_prompt": "an old man",
-        "validation_guidance_scale": 20,
+        "class_prompt":         "a full photo of a handsome Indian man",
+        "class_data_dir":       "/shareddata/dheyo/shivanvitha/diffusers/examples/research_projects/rc_ntr_prabhas_pp_outputs",
+        "validation_prompt":    "a photo of rnp man",
+        "validation_negative_prompt": "animated, cartoon, bad eyes, unibrow, extra arms, extra fingers, extra legs, mutated hands, fused fingers, long neck, cross-eyed, long head, deformed hands, ugly, wrong proportion, low res, bad anatomy, worst quality, low quality",
+        "validation_guidance_scale": 5,
         "validation_number_images": 3,
         "validation_inference_steps": 30,
         "dataset_name": "shivanvitha21/rc_ntr_prabhas_dataset_v1"

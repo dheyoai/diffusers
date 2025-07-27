@@ -81,7 +81,7 @@ source omni/bin/activate
 ```
 
 
-8. Modify data_configs/train/example/t2i/jsonls/0.jsonl
+8. Modify `data_configs/train/example/t2i/jsonls/0.jsonl`
 
 Change the instruction to desired prompts while keeping the special token followed by class constant in all rows (Ex: "[E]" boy, "rnp man", "[V] girl", etc..)
 
@@ -90,12 +90,18 @@ Also provide paths to the generated images in "output_image" field
 
 {"task_type": "t2i", "instruction": "A side profile photo of [E] boy smiling while looking through a window", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/character_A/images/<file_name_1>"}
 ```
+
+9. Modify save path in YAML file (`options/ft_lora.yml`)
+
+```yaml
+save_path: "experiments_character_A" # 👈 this field in the file
+```
 **Note:** Consult Shivanvitha before modifying `options/ft_lora.yml` if you want to use more number of GPUs, a change in batch size (per device or global based on num_processes), etc..
 
 
 ## Launch OmniGen2 LoRA Fine-Tuning
 
-9. The below command uses only 1 GPU to perform LoRA Fine-tuning
+10. The below command uses only 1 GPU to perform LoRA Fine-tuning
 
 ```bash
 HIP_VISIBLE_DEVICES=3 accelerate launch  \
@@ -117,7 +123,7 @@ train.py --config options/ft_lora.yml
 
 ## Convert FSDP LoRA weights to HF weights
 
-10. Post training, we MUST convert the FSDP-saved checkpoint (.bin) into the standard Hugging Face format before we can use it for inference.
+11. Post training, we MUST convert the FSDP-saved checkpoint (.bin) into the standard Hugging Face format before we can use it for inference.
 
 ```bash
 python convert_ckpt_to_hf_format.py \
@@ -130,7 +136,7 @@ Where `<num>` is the global step number whose checkpoint was saved.
 
 ## Multi-prompt Inference
 
-11. Create a prompts.txt or any txt file with a list of prompts for inference
+12. Create a prompts.txt or any txt file with a list of prompts for inference
 
 Each prompt should start on a newline
 
@@ -142,7 +148,7 @@ A photo of [E] boy with a smiling face, dressed in a yellow t-shirt and shorts, 
 ....
 ```
 
-12. Generate images in bulk
+13. Generate images in bulk
 
 ```bash
 HIP_VISIBLE_DEVICES=3 python3 inference_2.py \

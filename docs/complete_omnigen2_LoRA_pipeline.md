@@ -126,7 +126,7 @@ python convert_ckpt_to_hf_format.py \
   --save_path experiments_character_A/ft/checkpoint-<num>/transformer
 ```
 
-Where <num> is the global step number whose checkpoint was saved.
+Where `<num>` is the global step number whose checkpoint was saved.
 
 ## Multi-prompt Inference
 

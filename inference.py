@@ -5,6 +5,7 @@ dotenv.load_dotenv(override=True)
 import argparse
 import os
 from typing import List, Tuple
+from safetensors.torch import load_file
 
 from PIL import Image, ImageOps
 
@@ -16,6 +17,8 @@ from diffusers.hooks import apply_group_offloading
 
 from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
 from omnigen2.models.transformers.transformer_omnigen2 import OmniGen2Transformer2DModel
+from transformers import Qwen2_5_VLModel as TextEncoder
+from transformers import AutoTokenizer
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +35,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to transformer checkpoint.",
+    )
+    parser.add_argument(
+        "--ti_embeddings_path",
+        type=str,
+        default=None,
+        help="Path to the embeddings safetensors file to load in textual inversion",
     )
     parser.add_argument(
         "--transformer_lora_path",
@@ -114,6 +123,12 @@ def parse_args() -> argparse.Namespace:
         help="Text prompt for generation."
     )
     parser.add_argument(
+        "--special_token",
+        type=str,
+        default=None,
+        help="Special token used as an identifier"
+    )
+    parser.add_argument(
         "--negative_prompt",
         type=str,
         default="(((deformed))), blurry, over saturation, bad anatomy, disfigured, poorly drawn face, mutation, mutated, (extra_limb), (ugly), (poorly drawn hands), fused fingers, messy drawing, broken legs censor, censored, censor_bar",
@@ -169,6 +184,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable TaylorSeer Caching."
     )
+
     return parser.parse_args()
 
 def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dtype: torch.dtype) -> OmniGen2Pipeline:
@@ -194,6 +210,47 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
     if args.transformer_lora_path:
         print(f"LoRA weights loaded from {args.transformer_lora_path}")
         pipeline.load_lora_weights(args.transformer_lora_path)
+
+    # if args.ti_embeddings_path: # 👈 take care of TI here!!!!!!!!!!!!!
+    #     state_dict = load_file(args.ti_embeddings_path)
+    #     ## get the number of tokens from state_dict shape here !!!!!!!!!!
+    #     num_representation_tokens = state_dict["qwen_vl"].shape[0]
+    #     representation_tokens = [ f"<s{i}>" for i in range(num_representation_tokens) ]
+    #     # pipeline.load_textual_inversion(state_dict["qwen_vl"], token=["<s0>", "<s1>", "<s2>", "<s3>", "<s4>", "<s5>", "<s6>"])
+    #     pipeline.load_textual_inversion(state_dict["qwen_vl"], token=representation_tokens)
+    #     args.instruction = args.instruction.replace(args.special_token, "".join(representation_tokens))
+
+    if args.ti_embeddings_path:
+        # mllm = CLIPTextModel.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct", state_dict=None)  # Don't load weights yet
+        mllm = TextEncoder.from_pretrained(
+            "Qwen/Qwen2.5-VL-3B-Instruct",
+            # torch_dtype=torch.float32,
+            torch_dtype=weight_dtype,
+        )
+        text_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
+        text_tokenizer.padding_side = "right"
+        state_dict = load_file(args.ti_embeddings_path)
+        ## get the number of tokens from state_dict shape here !!!!!!!!!!
+        new_tokens_state_dict = load_file(args.ti_embeddings_path)
+        num_representation_tokens = new_tokens_state_dict["qwen_vl"].shape[0]
+
+        # import pdb; pdb.set_trace()
+        representation_tokens = [ f"<s{i}>" for i in range(num_representation_tokens) ]
+        pipeline.processor.tokenizer = text_tokenizer
+        pipeline.processor.tokenizer.add_tokens(representation_tokens)
+
+        # Load weights from SafeTensors
+        state_dict = load_file("/shareddata/dheyo/shivanvitha/OmniGen2/experiments_dummy_2/ft_lora/checkpoint-3000/model_1.safetensors")
+        # Load the state dictionary into the model
+
+        mllm.resize_token_embeddings(len(pipeline.processor.tokenizer))
+        mllm.load_state_dict(state_dict)
+        mllm.eval()
+        pipeline.mllm = mllm
+
+        args.instruction = args.instruction.replace(args.special_token, "".join(representation_tokens))
+
+        # import pdb; pdb.set_trace()
 
     if args.enable_teacache and args.enable_taylorseer:
         print("WARNING: enable_teacache and enable_taylorseer are mutually exclusive. enable_teacache will be ignored.")

@@ -15,6 +15,7 @@ from peft.utils import get_peft_model_state_dict
 from omnigen2.models.transformers.transformer_omnigen2 import OmniGen2Transformer2DModel
 from omnigen2.pipelines.omnigen2.pipeline_omnigen2 import OmniGen2Pipeline
 
+from safetensors.torch import load_file
 
 def main(args):
     config_path = args.config_path
@@ -45,7 +46,12 @@ def main(args):
             )
             transformer.add_adapter(lora_config)
 
-    state_dict = torch.load(model_path, mmap=True, weights_only=True)
+
+    if model_path.endswith(".safetensors"):
+        state_dict = load_file(model_path)
+    else:
+        state_dict = torch.load(model_path, mmap=True, weights_only=True)
+
     missing, unexpect = transformer.load_state_dict(
         state_dict, assign=True, strict=False
     )

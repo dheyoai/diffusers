@@ -16,7 +16,7 @@ import os
 from typing import Callable, Dict, List, Optional, Union
 
 import torch
-from huggingface_hub.utils import validate_REMOVED_TOKENhub_args
+from huggingface_hub.utils import validate_hf_hub_args
 
 from diffusers.utils import (
     USE_PEFT_BACKEND,
@@ -60,7 +60,7 @@ class OmniGen2LoraLoaderMixin(LoraBaseMixin):
     transformer_name = TRANSFORMER_NAME
 
     @classmethod
-    @validate_REMOVED_TOKENhub_args
+    @validate_hf_hub_args
     def lora_state_dict(
         cls,
         pretrained_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]],

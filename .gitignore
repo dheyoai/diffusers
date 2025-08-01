@@ -233,3 +233,14 @@ outputs_gradio/*
 test.py
 data_configs/test
 scripts/test
+flash-attention
+experiments
+omni
+shivanvitha_*
+*.zip
+rama_*
+test_embed_diff.py 
+two_chars_test.py
+prompts
+experiments_*
+inferenced_images

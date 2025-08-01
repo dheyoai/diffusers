@@ -1,2 +1,28 @@
-{"task_type": "t2i", "instruction": "A big tree is in the forest", "output_image": "/path/to/your/data/t2i/0.png"}
-{"task_type": "t2i", "instruction": "a dog is running on grass", "output_image": "/path/to/your/data/t2i/1.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy with a stern glance, studying in a library", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-28-28_image_1.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy in a black hoodie, looking sideways at the camera while sitting in a library", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-28-28_image_2.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy reading a book", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-28-28_image_3.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy studying seriously", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-28-28_image_4.png"}
+{"task_type": "t2i", "instruction": "A side profile photo of [E] boy taking notes in a library", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-28-28_image_5.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy crying", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-34-13_image_1.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy crying in his room", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-34-13_image_2.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy, sitting on his bed and crying", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-34-13_image_3.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy feeling down and sad", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-34-13_image_4.png"}
+{"task_type": "t2i", "instruction": "A side profile photo of [E] boy crying", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-34-13_image_5.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy with a very annoyed expression", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-44-35_image_1.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy looking quite angry", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-44-35_image_2.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy, unhappy, leaning to a wall wearing an orange shirt and a red hat", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-55-14_image_2.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy with a firm and soft gaze", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-55-14_image_3.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy with a poker face, walking on streets", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-55-14_image_4.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy in orange shirt and a red hat", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_16-55-14_image_5.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy smiling, looking sideways while a football comes flying his way", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_17-34-49_image_4.png"}
+{"task_type": "t2i", "instruction": "A side profile photo of [E] boy in football court", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_17-34-49_image_5.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy with a happy expression standing in a classroom with a board and 2 girls behind him", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_18-46-28_image_1.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy smiling in a classroom", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_18-46-28_image_2.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy looking sideways while in classroom", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_18-46-28_image_3.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy smiling with students studying in the background", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_18-46-28_image_4.png"}
+{"task_type": "t2i", "instruction": "A photo of [E] boy with a trimmed hairstyle, smiling", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/23-07-25_18-46-28_image_5.png"}
+{"task_type": "t2i", "instruction": "A side profile photo of [E] boy smiling, looking out of a window", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/image_7_1.png"}
+{"task_type": "t2i", "instruction": "A side profile photo of [E] boy looking at the sky", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/image_7_2.png"}
+{"task_type": "t2i", "instruction": "A side profile photo of [E] boy slightly smiling", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/image_7_3.png"}
+{"task_type": "t2i", "instruction": "A side profile photo of [E] boy with an open window in the background", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/image_7_4.png"}
+{"task_type": "t2i", "instruction": "A side profile photo of [E] boy smiling while looking through a window", "output_image": "/shareddata/dheyo/shivanvitha/image_gen/synthetic_datasets/boy/images/image_7_5.png"}

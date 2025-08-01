@@ -78,7 +78,8 @@ def parse_args(root_path) -> OmegaConf:
     args = parser.parse_args()
     conf = OmegaConf.load(args.config)
 
-    output_dir = os.path.join(root_path, 'experiments', conf.name)
+    # output_dir = os.path.join(root_path, 'experiments', conf.name)
+    output_dir = os.path.join(root_path, conf.save_path, conf.name)
     conf.root_dir = root_path
     conf.output_dir = output_dir
     conf.config_file = args.config

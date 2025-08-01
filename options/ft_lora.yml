@@ -4,8 +4,10 @@ seed: 2233
 device_specific_seed: true
 workder_specific_seed: true
 
+save_path: "experiments_kc_men_2"
+
 data:
-  data_path: data_configs/train/example/mix.yml
+  data_path: data_configs/train/example/t2i/t2i.yml
   use_chat_template: true
   maximum_text_tokens: 888
   prompt_dropout_prob: !!float 0.0001
@@ -41,16 +43,16 @@ transport:
 
 train:
   # Dataloader
-  global_batch_size: 16
+  global_batch_size: 2
   batch_size: 2
   gradient_accumulation_steps: 1
 
-  max_train_steps: 4000
+  max_train_steps: 6000
   
-  dataloader_num_workers: 6
+  dataloader_num_workers: 0
 
   # Optimizer
-  learning_rate: !!float 8e-7
+  learning_rate: !!float 2e-4
   scale_lr: false
   lr_scheduler: timm_constant_with_warmup
   warmup_t: 500
@@ -78,18 +80,18 @@ train:
   ema_decay: 0.0
 
   lora_ft: true
-  lora_rank: 8
+  lora_rank: 16
   lora_dropout: 0
 
 val:
-  validation_steps: 500
-  train_visualization_steps: 100
+  validation_steps: 600
+  train_visualization_steps: 600
 
 logger:
-  log_with: [wandb, tensorboard]
+  log_with: [tensorboard]
   # log_with: ~
 
-  checkpointing_steps: 1000
+  checkpointing_steps: 600
   checkpoints_total_limit: ~
 
 cache_dir: 

@@ -1,16 +1,16 @@
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict
 
 import os
 import random
 import yaml
 import glob
 from PIL import Image
-
+# from accelerate.logging import get_logger
 import torch
 from torchvision import transforms
 
 from datasets import load_dataset, concatenate_datasets
-
+import re
 from ..pipelines.omnigen2.pipeline_omnigen2 import OmniGen2ImageProcessor
 
 class OmniGen2TrainDataset(torch.utils.data.Dataset):
@@ -28,6 +28,10 @@ class OmniGen2TrainDataset(torch.utils.data.Dataset):
         img_scale_num: int = 16,
         prompt_dropout_prob: float = 0.0,
         ref_img_dropout_prob: float = 0.0,
+        pivotal_tuning: Optional[bool] = False, ## new - whether to do pivotal tuning or not
+        initializer_concept: Optional[str] = None, ## new - if the above is true then this HAS TO BE a non-None value
+        token_abstraction: Optional[str] = None, ## new - if pivotal tuning is True, this will be considered
+        token_abstraction_dict: Optional[Dict] = {} ## new for holding abstraction values
     ):
         self.max_input_pixels = max_input_pixels
         self.max_output_pixels = max_output_pixels
@@ -47,6 +51,10 @@ class OmniGen2TrainDataset(torch.utils.data.Dataset):
 
         self.data = data
         self.tokenizer = tokenizer
+        self.pivotal_tuning = pivotal_tuning
+        self.initializer_concept = initializer_concept
+        self.token_abstraction = token_abstraction
+        self.token_abstraction_dict = token_abstraction_dict
         
     def _collect_annotations(self, config):
         total_samples = 0
@@ -112,17 +120,48 @@ class OmniGen2TrainDataset(torch.utils.data.Dataset):
             instruction = self.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=False)
         return instruction
     
-    def process_item(self, data_item):
+    def process_item(self, data_item): 
         assert data_item['instruction'] is not None
         data_item = self.clean_data_item(data_item)
 
         drop_prompt = random.random() < self.prompt_dropout_prob
         drop_ref_img = drop_prompt and random.random() < self.ref_img_dropout_prob
 
+        if self.pivotal_tuning:
+            # token_abstraction_list = [place_holder.strip() for place_holder in re.split(r",\s*", self.token_abstraction)]
+            # print(f"list of token identifiers: {token_abstraction_list}")
+            # ## replace token_abs with new tokens
+            # token_ids = self.tokenizer.encode(self.initializer_concept, add_special_tokens=False)
+            # num_new_tokens_per_abstraction = len(token_ids)
+            # print(
+            #     f"initializer_concept: {self.initializer_concept}, num_new_tokens_per_abstraction: {num_new_tokens_per_abstraction}"
+            # )
+        
+            # token_abstraction_dict = {}
+            # token_idx = 0
+            # for i, token in enumerate(token_abstraction_list):
+            #     token_abstraction_dict[token] = [f"<s{token_idx + i + j}>" for j in range(num_new_tokens_per_abstraction)]
+            #     token_idx += num_new_tokens_per_abstraction - 1
+
+            # replace instances of --token_abstraction in --instance_prompt with the new tokens: "<si><si+1>" etc.
+            for token_abs, token_replacement in self.token_abstraction_dict.items():
+                new_instance_prompt = data_item['instruction'].replace(token_abs, "".join(token_replacement))
+                if data_item['instruction'] == new_instance_prompt:
+                    print(
+                        "WARNING!!!! ⚠️: "
+                        "Note! the instance prompt provided in --instance_prompt does not include the token abstraction specified "
+                        "--token_abstraction. This may lead to incorrect optimization of text embeddings during pivotal tuning"
+                    )
+        else:
+            new_instance_prompt = None
+
         if drop_prompt:
             instruction = self.apply_chat_template("", self.SYSTEM_PROMPT_DROP)
         else:
-            instruction = self.apply_chat_template(data_item['instruction'], self.SYSTEM_PROMPT)
+            if new_instance_prompt is None:
+                instruction = self.apply_chat_template(data_item['instruction'], self.SYSTEM_PROMPT)
+            else:
+                instruction = self.apply_chat_template(new_instance_prompt, self.SYSTEM_PROMPT)
 
         if not drop_ref_img and 'input_images' in data_item and data_item['input_images'] is not None:
             input_images_path = data_item['input_images']
@@ -148,6 +187,7 @@ class OmniGen2TrainDataset(torch.utils.data.Dataset):
             'input_images': input_images,
             'output_image': output_image,
             'output_image_path': output_image_path,
+            # 'token_abstraction_dict': token_abstraction_dict if self.pivotal_tuning else None
         }
         return data
 

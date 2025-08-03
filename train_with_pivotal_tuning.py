@@ -346,17 +346,27 @@ def main(args):
         token_abstraction_list = [place_holder.strip() for place_holder in re.split(r",\s*", args.pivotal_tuning["token_abstraction"])]
         print(f"list of token identifiers: {token_abstraction_list}")
         ## replace token_abs with new tokens
-        token_ids = text_tokenizer.encode(args.pivotal_tuning["initializer_concept"], add_special_tokens=False)
-        num_new_tokens_per_abstraction = len(token_ids)
+        initializer_concepts = args.pivotal_tuning["initializer_concept"].split("\n")
+        if len(initializer_concepts) != len(token_abstraction_list):
+            ValueError(f"Number of abstraction tokens and initializer concepts should be equal!!")
+
+        num_new_tokens_per_abstraction_dict = {}
+        for i, concept in enumerate(initializer_concepts):
+            token_ids = text_tokenizer.encode(concept, add_special_tokens=False)
+            num_new_tokens_per_abstraction_dict[token_abstraction_list[i]] = len(token_ids)
+        # num_new_tokens_per_abstraction = len(token_ids)
+
         print(
-            f"initializer_concept: {args.pivotal_tuning['initializer_concept']}, num_new_tokens_per_abstraction: {num_new_tokens_per_abstraction}"
+            f"\n\ninitializer_concept: {args.pivotal_tuning['initializer_concept']}, num_new_tokens_per_abstraction_dict: {num_new_tokens_per_abstraction_dict}\n\n"
         )
 
         token_abstraction_dict = {}
         token_idx = 0
         for i, token in enumerate(token_abstraction_list):
-            token_abstraction_dict[token] = [f"<s{token_idx + i + j}>" for j in range(num_new_tokens_per_abstraction)]
-            token_idx += num_new_tokens_per_abstraction - 1
+            token_abstraction_dict[token] = [f"<s{token_idx + i + j}>" for j in range(num_new_tokens_per_abstraction_dict[token])]
+            token_idx += num_new_tokens_per_abstraction_dict[token] - 1
+
+        print(f"\n\nTOKEN ABSTRACTION DICT: {token_abstraction_dict}\n\n")
 
         if args.pivotal_tuning['pivotal_tuning']:
             embedding_handler = TokenEmbeddingsHandler(text_encoder, text_tokenizer)
@@ -841,6 +851,9 @@ def main(args):
                         embedding_handler.save_embeddings(
                             f"{args.output_dir}/{Path(args.output_dir).name}_emb_checkpoint_{global_step}.safetensors"
                         )
+                    ## saving the tokenizer here so that it has the new tokens
+                    if accelerator.is_main_process:
+                        text_tokenizer.save_pretrained(os.path.join(save_path, 'tokenizer'))
                     logger.info(f"Saved state to {save_path}")
                     
                 if accelerator.is_main_process:

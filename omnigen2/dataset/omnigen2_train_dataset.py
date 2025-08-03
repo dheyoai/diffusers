@@ -145,16 +145,23 @@ class OmniGen2TrainDataset(torch.utils.data.Dataset):
 
             # replace instances of --token_abstraction in --instance_prompt with the new tokens: "<si><si+1>" etc.
             for token_abs, token_replacement in self.token_abstraction_dict.items():
+                # print(data_item['instruction'])
+                # print(token_abs)
+                # print("\n\n\n")
                 new_instance_prompt = data_item['instruction'].replace(token_abs, "".join(token_replacement))
-                if data_item['instruction'] == new_instance_prompt:
-                    print(
-                        "WARNING!!!! ⚠️: "
-                        "Note! the instance prompt provided in --instance_prompt does not include the token abstraction specified "
-                        "--token_abstraction. This may lead to incorrect optimization of text embeddings during pivotal tuning"
-                    )
+                if data_item['instruction'] != new_instance_prompt:
+                    break
+
+            if data_item['instruction'] == new_instance_prompt:
+                print(
+                    "WARNING!!!! ⚠️: "
+                    "Note! the instance prompt provided in --instance_prompt does not include the token abstraction specified "
+                    "--token_abstraction. This may lead to incorrect optimization of text embeddings during pivotal tuning"
+                )
         else:
             new_instance_prompt = None
 
+        # print(new_instance_prompt)
         if drop_prompt:
             instruction = self.apply_chat_template("", self.SYSTEM_PROMPT_DROP)
         else:

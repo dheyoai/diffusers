@@ -8,7 +8,7 @@ from typing import List, Tuple
 from safetensors.torch import load_file
 
 from PIL import Image, ImageOps
-
+import json
 import torch
 from torchvision.transforms.functional import to_pil_image, to_tensor
 
@@ -30,6 +30,13 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Path to model checkpoint.",
     )
+    parser.add_argument(
+        "--token_abstraction_json_path",
+        type=str,
+        required=True,
+        help="Path to token abstraction dict",
+    )
+
     parser.add_argument(
         "--transformer_path",
         type=str,
@@ -123,7 +130,7 @@ def parse_args() -> argparse.Namespace:
         help="Text prompt for generation."
     )
     parser.add_argument(
-        "--special_token",
+        "--special_tokens",
         type=str,
         default=None,
         help="Special token used as an identifier"
@@ -227,20 +234,24 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
             # torch_dtype=torch.float32,
             torch_dtype=weight_dtype,
         )
-        text_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
+        # text_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
+        text_tokenizer = AutoTokenizer.from_pretrained("/shareddata/dheyo/shivanvitha/OmniGen2/experiments_dummy_ko/ft_lora/checkpoint-3000/tokenizer")
         text_tokenizer.padding_side = "right"
-        state_dict = load_file(args.ti_embeddings_path)
+
+        # # import pdb; pdb.set_trace()
         ## get the number of tokens from state_dict shape here !!!!!!!!!!
-        new_tokens_state_dict = load_file(args.ti_embeddings_path)
-        num_representation_tokens = new_tokens_state_dict["qwen_vl"].shape[0]
+        # new_tokens_state_dict = load_file(args.ti_embeddings_path)
+        # num_representation_tokens = new_tokens_state_dict["qwen_vl"].shape[0]
 
         # import pdb; pdb.set_trace()
-        representation_tokens = [ f"<s{i}>" for i in range(num_representation_tokens) ]
+        # representation_tokens = [ f"<s{i}>" for i in range(num_representation_tokens) ]
+        with open(args.token_abstraction_json_path, "r") as file:
+            representation_tokens = json.load(file)
         pipeline.processor.tokenizer = text_tokenizer
-        pipeline.processor.tokenizer.add_tokens(representation_tokens)
+        # pipeline.processor.tokenizer.add_tokens(representation_tokens)
 
         # Load weights from SafeTensors
-        state_dict = load_file("/shareddata/dheyo/shivanvitha/OmniGen2/experiments_dummy_2/ft_lora/checkpoint-3000/model_1.safetensors")
+        state_dict = load_file("/shareddata/dheyo/shivanvitha/OmniGen2/experiments_dummy_ko/ft_lora/checkpoint-3000/model_1.safetensors")
         # Load the state dictionary into the model
 
         mllm.resize_token_embeddings(len(pipeline.processor.tokenizer))
@@ -248,7 +259,11 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
         mllm.eval()
         pipeline.mllm = mllm
 
-        args.instruction = args.instruction.replace(args.special_token, "".join(representation_tokens))
+        # import pdb; pdb.set_trace()
+
+        special_tokens = args.special_tokens.replace(" ", '').split(",")
+        for special_token in special_tokens:
+            args.instruction = args.instruction.replace(special_token, "".join(representation_tokens[special_token]))
 
         # import pdb; pdb.set_trace()
 

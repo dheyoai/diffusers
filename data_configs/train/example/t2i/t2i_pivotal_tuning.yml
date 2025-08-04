@@ -1,0 +1,9 @@
+data:
+  - 
+    path: "data_configs/train/example/t2i/jsonls/coolie.jsonl"
+    type: "t2i"
+    ratio: !!float 1
+  - 
+    path: "data_configs/train/example/t2i/jsonls/old_man.jsonl"
+    type: "t2i"
+    ratio: !!float 1

@@ -17,6 +17,7 @@ from pathlib import Path
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm
 import re 
+import json
 
 import numpy as np
 
@@ -847,6 +848,10 @@ def main(args):
                     accelerator.wait_for_everyone()
                     save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                     accelerator.save_state(save_path)
+                    ### save token_abstraction_dict here!!!
+                    with open(f"{save_path}/tokens.json", "w") as file:
+                        json.dump(token_abstraction_dict, file, indent=4)
+
                     if args.pivotal_tuning["pivotal_tuning"]:
                         embedding_handler.save_embeddings(
                             f"{args.output_dir}/{Path(args.output_dir).name}_emb_checkpoint_{global_step}.safetensors"

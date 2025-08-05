@@ -20,7 +20,7 @@ Note: Modifications to jsonls and t2i.yml (TI version) are similar to what's dem
 
 ## Launch Training with DDP
 
-The easiest and best way to train two modules simulatenously (as in case of TI where DiT and Text Encoder are fine-tuned), DDP (Distributed Data Parallelism) is the best way. Here, only the data is sharded and a copy of params, grads and optimizer states are maintained across all GPU processes. 
+2. The easiest and best way to train two modules simulatenously (as in case of TI where DiT and Text Encoder are fine-tuned), DDP (Distributed Data Parallelism) is the best way. Here, only the data is sharded and a copy of params, grads and optimizer states are maintained across all GPU processes. 
 Note: For DDP, the model has to fit into a single GPU.
 
 You can change any of the settings below in [config/ddp.yaml](../config/ddp.yaml)
@@ -53,7 +53,7 @@ accelerate launch --config_file config/ddp.yaml train_with_pivotal_tuning.py --c
 
 ## Convert to HF LoRA Weights
 
-Like in FSDP we need to convert the saved DiT weights to proper HF compatible LoRA weights.
+3. Like in FSDP we need to convert the saved DiT weights to proper HF compatible LoRA weights.
 
 ```bash
 python3 convert_ckpt_to_hf_format.py \
@@ -67,7 +67,7 @@ This will save a `pytorch_lora_weights.safetensors` in the specified save_path
 
 ## Single Prompt Inference
 
-A sample command is shown below:
+5. A sample command is shown below:
 
 ```bash
 python3 inference.py \
@@ -86,7 +86,7 @@ python3 inference.py \
 
 ## Multi Prompt Inference
 
-In order to perform OmniGen2 dreambooth TI bulk inference, refer to the below sample command:
+6. In order to perform OmniGen2 dreambooth TI bulk inference, refer to the below sample command:
 
 ```bash
 python3 inference_2.py \

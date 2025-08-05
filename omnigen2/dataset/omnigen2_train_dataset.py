@@ -178,14 +178,14 @@ class OmniGen2TrainDataset(torch.utils.data.Dataset):
 
             for input_image_path in input_images_path:
                 input_image = Image.open(input_image_path).convert("RGB")
-                input_image = self.image_processor.preprocess(input_image, max_pixels=max_input_pixels, max_side_length=self.max_side_length)
+                input_image = self.image_processor.preprocess(input_image, max_pixels=max_input_pixels, max_side_length=self.max_side_length, resize_mode="fill")
                 input_images.append(input_image)
         else:
             input_images_path, input_images = None, None
 
         output_image_path = data_item['output_image']
         output_image = Image.open(output_image_path).convert("RGB")
-        output_image = self.image_processor.preprocess(output_image, max_pixels=self.max_output_pixels, max_side_length=self.max_side_length)
+        output_image = self.image_processor.preprocess(output_image, max_pixels=self.max_output_pixels, max_side_length=self.max_side_length, resize_mode="fill")
 
         data = {
             'task_type': data_item['task_type'],

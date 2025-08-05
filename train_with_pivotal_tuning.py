@@ -518,7 +518,8 @@ def main(args):
             pivotal_tuning=args.pivotal_tuning.get('pivotal_tuning', False),
             initializer_concept=args.pivotal_tuning.get('initializer_concept'),
             token_abstraction=args.pivotal_tuning.get('token_abstraction'),
-            token_abstraction_dict=token_abstraction_dict if args.pivotal_tuning["pivotal_tuning"] else None
+            token_abstraction_dict=token_abstraction_dict if args.pivotal_tuning["pivotal_tuning"] else None,
+            output_dir=args.output_dir 
         )
 
     # default: 1000 steps, linear noise schedule
@@ -556,6 +557,7 @@ def main(args):
         worker_init_fn = None
 
     logger.info("***** Prepare dataLoader *****")
+    
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
@@ -566,7 +568,7 @@ def main(args):
         collate_fn=OmniGen2Collator(tokenizer=text_tokenizer, max_token_len=args.data.maximum_text_tokens)
     )
 
-    logger.info(f"{args.train.batch_size=} {args.train.gradient_accumulation_steps=} {accelerator.num_processes=} {args.train.global_batch_size=}")
+    logger.info(f"{args.train.batch_size=} {args.train.gradient_accumulation_steps=} {accelerator.num_processes=} {args.train.global_batch_size=} {len(train_dataloader)=} {args.train.gradient_accumulation_steps=}, {math.ceil(len(train_dataloader) / args.train.gradient_accumulation_steps)}")
     assert (
         args.train.batch_size
         * args.train.gradient_accumulation_steps
@@ -575,6 +577,9 @@ def main(args):
     ), (
         f"{args.train.batch_size=} * {args.train.gradient_accumulation_steps=} * {accelerator.num_processes=} should be equal to {args.train.global_batch_size=}"
     )
+
+    logger.info(f"{args.train.batch_size=} {args.train.gradient_accumulation_steps=} {accelerator.num_processes=} {args.train.global_batch_size=} {len(train_dataloader)=} {args.train.gradient_accumulation_steps=}, {math.ceil(len(train_dataloader) / args.train.gradient_accumulation_steps)}")
+    assert ( len(train_dataloader) > 0 ), (f"train dataloader size is zero, batch: {args.train.batch_size}, num_workers: {args.train.dataloader_num_workers}, max_tokens: {args.data.maximum_text_tokens}")
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -632,6 +637,9 @@ def main(args):
             model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
                 model, optimizer, train_dataloader, lr_scheduler
             )
+
+    logger.info(f"{args.train.batch_size=} {args.train.gradient_accumulation_steps=} {accelerator.num_processes=} {args.train.global_batch_size=} {len(train_dataloader)=} {args.train.gradient_accumulation_steps=}, {math.ceil(len(train_dataloader) / args.train.gradient_accumulation_steps)}")
+    assert ( len(train_dataloader) > 0 ), (f"train dataloader size is zero, batch: {args.train.batch_size}, num_workers: {args.train.dataloader_num_workers}, max_tokens: {args.data.maximum_text_tokens}")
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.train.gradient_accumulation_steps)

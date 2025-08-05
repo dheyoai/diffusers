@@ -31,7 +31,8 @@ class OmniGen2TrainDataset(torch.utils.data.Dataset):
         pivotal_tuning: Optional[bool] = False, ## new - whether to do pivotal tuning or not
         initializer_concept: Optional[str] = None, ## new - if the above is true then this HAS TO BE a non-None value
         token_abstraction: Optional[str] = None, ## new - if pivotal tuning is True, this will be considered
-        token_abstraction_dict: Optional[Dict] = {} ## new for holding abstraction values
+        token_abstraction_dict: Optional[Dict] = {}, ## new for holding abstraction values
+        output_dir: str = ""
     ):
         self.max_input_pixels = max_input_pixels
         self.max_output_pixels = max_output_pixels
@@ -41,6 +42,7 @@ class OmniGen2TrainDataset(torch.utils.data.Dataset):
         self.prompt_dropout_prob = prompt_dropout_prob
         self.ref_img_dropout_prob = ref_img_dropout_prob
 
+        self.output_dir = output_dir
         with open(config_path, "r") as f:
             self.config = yaml.load(f, Loader=yaml.FullLoader)
 
@@ -178,14 +180,22 @@ class OmniGen2TrainDataset(torch.utils.data.Dataset):
 
             for input_image_path in input_images_path:
                 input_image = Image.open(input_image_path).convert("RGB")
-                input_image = self.image_processor.preprocess(input_image, max_pixels=max_input_pixels, max_side_length=self.max_side_length, resize_mode="fill")
+                input_image = self.image_processor.preprocess(input_image, 
+                                                              max_pixels=max_input_pixels, 
+                                                              max_side_length=self.max_side_length, 
+                                                              resize_mode="fill",
+                                                              output_dir=self.output_dir)
                 input_images.append(input_image)
         else:
             input_images_path, input_images = None, None
 
         output_image_path = data_item['output_image']
         output_image = Image.open(output_image_path).convert("RGB")
-        output_image = self.image_processor.preprocess(output_image, max_pixels=self.max_output_pixels, max_side_length=self.max_side_length, resize_mode="fill")
+        output_image = self.image_processor.preprocess(output_image, 
+                                                       max_pixels=self.max_output_pixels, 
+                                                       max_side_length=self.max_side_length, 
+                                                       resize_mode="fill",
+                                                       output_dir=self.output_dir)
 
         data = {
             'task_type': data_item['task_type'],

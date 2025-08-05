@@ -33,7 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--token_abstraction_json_path",
         type=str,
-        required=True,
+        # required=True,
+        default=None,
         help="Path to token abstraction dict",
     )
 
@@ -227,7 +228,7 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
     #     pipeline.load_textual_inversion(state_dict["qwen_vl"], token=representation_tokens)
     #     args.instruction = args.instruction.replace(args.special_token, "".join(representation_tokens))
 
-    if args.ti_embeddings_path:
+    if args.token_abstraction_json_path:
         # mllm = CLIPTextModel.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct", state_dict=None)  # Don't load weights yet
         mllm = TextEncoder.from_pretrained(
             "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -235,7 +236,8 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
             torch_dtype=weight_dtype,
         )
         # text_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
-        text_tokenizer = AutoTokenizer.from_pretrained("/shareddata/dheyo/shivanvitha/OmniGen2/experiments_dummy_ko/ft_lora/checkpoint-3000/tokenizer")
+        # text_tokenizer = AutoTokenizer.from_pretrained("/shareddata/dheyo/shivanvitha/OmniGen2/experiments_dummy_ko/ft_lora/checkpoint-3000/tokenizer")
+        text_tokenizer = AutoTokenizer.from_pretrained(f"{args.transformer_lora_path.replace('/transformer_lora', '')}/tokenizer")
         text_tokenizer.padding_side = "right"
 
         # # import pdb; pdb.set_trace()
@@ -251,17 +253,21 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
         # pipeline.processor.tokenizer.add_tokens(representation_tokens)
 
         # Load weights from SafeTensors
-        state_dict = load_file("/shareddata/dheyo/shivanvitha/OmniGen2/experiments_dummy_ko/ft_lora/checkpoint-3000/model_1.safetensors")
+        # state_dict = load_file("/shareddata/dheyo/shivanvitha/OmniGen2/experiments_dummy_ko/ft_lora/checkpoint-3000/model_1.safetensors")
+        state_dict = load_file(f"{args.transformer_lora_path.replace('/transformer_lora', '')}/model_1.safetensors")
         # Load the state dictionary into the model
 
         mllm.resize_token_embeddings(len(pipeline.processor.tokenizer))
         mllm.load_state_dict(state_dict)
+        print(f"\n\nloaded new state_dict for mllm\n\n")
         mllm.eval()
-        pipeline.mllm = mllm
-
         # import pdb; pdb.set_trace()
 
-        special_tokens = args.special_tokens.replace(" ", '').split(",")
+        pipeline.mllm = mllm
+
+
+        # special_tokens = args.special_tokens.replace(" ", '').split(",")
+        special_tokens = list(representation_tokens.keys())
         for special_token in special_tokens:
             args.instruction = args.instruction.replace(special_token, "".join(representation_tokens[special_token]))
 
@@ -327,7 +333,7 @@ def run(args: argparse.Namespace,
         input_images: List[Image.Image]) -> Image.Image:
     """Run the image generation pipeline with the given parameters."""
     generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
-
+    print(instruction)
     results = pipeline(
         prompt=instruction,
         input_images=input_images,

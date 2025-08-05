@@ -33,7 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--token_abstraction_json_path",
         type=str,
-        required=True,
+        # required=True,
+        default=None,
         help="Path to token abstraction dict",
     )
     parser.add_argument(
@@ -223,7 +224,7 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
         pipeline.load_lora_weights(args.transformer_lora_path)
 
 
-    if args.ti_embeddings_path:
+    if args.token_abstraction_json_path:
         # mllm = CLIPTextModel.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct", state_dict=None)  # Don't load weights yet
         mllm = TextEncoder.from_pretrained(
             "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -255,6 +256,8 @@ def load_pipeline(args: argparse.Namespace, accelerator: Accelerator, weight_dty
         mllm.load_state_dict(state_dict)
         mllm.eval()
         pipeline.mllm = mllm
+
+        print("\n\nLoaded TI Text Encoder and Tokenizer\n\n")
 
 
 
@@ -366,16 +369,20 @@ def main(args: argparse.Namespace, root_dir: str, prompts: List[str]) -> None:
     pipeline = load_pipeline(args, accelerator, weight_dtype)
     input_images = preprocess(args.input_image_path)
 
-    with open(args.token_abstraction_json_path, "r") as file:
-        representation_tokens = json.load(file)
+    if args.token_abstraction_json_path:
+        with open(args.token_abstraction_json_path, "r") as file:
+            representation_tokens = json.load(file)
 
-    special_tokens = args.special_tokens.replace(" ", '').split(",")
+        # special_tokens = args.special_tokens.replace(" ", '').split(",")
+        special_tokens = list(representation_tokens.keys())
+
 
     # Generate and save image
     for prompt in prompts:
         # results = run(args, accelerator, pipeline, args.instruction, args.negative_prompt, input_images)
-        for special_token in special_tokens:
-            prompt = prompt.replace(special_token, "".join(representation_tokens[special_token]))
+        if args.token_abstraction_json_path:
+            for special_token in special_tokens:
+                prompt = prompt.replace(special_token, "".join(representation_tokens[special_token]))
         results = run(args, accelerator, pipeline, prompt, args.negative_prompt, input_images)
         os.makedirs(os.path.dirname(args.output_image_path), exist_ok=True)
         timestamp = str(time.strftime("%d-%m-%y_%H-%M-%S"))

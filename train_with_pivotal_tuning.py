@@ -18,7 +18,7 @@ from omegaconf import OmegaConf
 from tqdm.auto import tqdm
 import re 
 import json
-
+import heapq
 import numpy as np
 
 import matplotlib.pyplot as plt
@@ -708,7 +708,51 @@ def main(args):
             if tracker.name == "wandb":
                 logger.info(f"***** Wandb log dir: {tracker.run.dir} *****")
     
+
+    best_checkpoints = []
+    def save_checkpoint(accelerator, args, global_step, avg_total_loss, logger, embedding_handler, text_tokenizer):
+        accelerator.wait_for_everyone()
+
+        save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+        accelerator.save_state(save_path)
+        
+        with open(f"{save_path}/tokens.json", "w") as file:
+            json.dump(token_abstraction_dict, file, indent=4)
+        
+        if args.pivotal_tuning["pivotal_tuning"]:
+            embedding_handler.save_embeddings(
+                f"{args.output_dir}/{Path(args.output_dir).name}_emb_checkpoint_{global_step}.safetensors"
+            )
+        
+        if accelerator.is_main_process:
+            text_tokenizer.save_pretrained(os.path.join(save_path, 'tokenizer'))
+        
+        heapq.heappush(best_checkpoints, (-avg_total_loss, global_step)) ## maintaining a max heap
+        
+        # import pdb; pdb.set_trace()
+        # Keep only top 3 checkpoints with lowest loss
+        if len(best_checkpoints) > 3:
+            checkpoints = os.listdir(args.output_dir)
+            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+            
+            # if len(checkpoints) >= args.logger.checkpoints_total_limit:
+            worst_loss, worst_step = heapq.heappop(best_checkpoints)
+            worst_checkpoint = f"checkpoint-{worst_step}"
+            
+            if worst_checkpoint in checkpoints:
+                remove_path = os.path.join(args.output_dir, worst_checkpoint)
+                logger.info(f"Removing checkpoint with highest loss: {worst_checkpoint} (loss: {worst_loss * -1})")
+                shutil.rmtree(remove_path)
+        
+        og_max_heap = [(-x[0], x[1]) for x in best_checkpoints]
+        with open(f"{save_path}/max_loss_heap_original.json", 'w') as f:
+            json.dump(og_max_heap, f)
+        logger.info(f"Saved state to {save_path} (loss: {avg_total_loss})")
+
+
     for epoch in range(first_epoch, args.train.num_train_epochs):
+        # mean_epoch_loss = []
         if 'max_train_steps' in args.train and global_step >= args.train.max_train_steps:
             break
         for step, batch in enumerate(train_dataloader):
@@ -777,6 +821,9 @@ def main(args):
                     num_processes=AcceleratorState().num_processes,
                     reduction='sum'
                 )
+
+                # if accelerator.is_main_process:
+                    # import pdb; pdb.set_trace()
                 loss = loss_dict["loss"].sum()
                 loss = (loss * accelerator.gradient_state.num_steps * accelerator.num_processes) / num_tokens_in_batch
                 total_loss = loss
@@ -822,6 +869,7 @@ def main(args):
             if accelerator.sync_gradients:
                 logs = {"loss": avg_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
                 logs["total_loss"] = avg_total_loss.detach().item()
+                # mean_epoch_loss.append(logs["total_loss"])
 
                 for i in range(n_loss_bins):
                     if bin_occurrence[i] > 0:
@@ -835,39 +883,41 @@ def main(args):
 
                 if global_step % args.logger.checkpointing_steps == 0:
                     if accelerator.is_main_process:
-                        if args.logger.checkpoints_total_limit is not None:
-                            checkpoints = os.listdir(args.output_dir)
-                            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-                            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                        save_checkpoint(accelerator, args, global_step, avg_total_loss.item(), logger, embedding_handler, text_tokenizer)
+                    # if accelerator.is_main_process:
+                    #     if args.logger.checkpoints_total_limit is not None:
+                    #         checkpoints = os.listdir(args.output_dir)
+                    #         checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                    #         checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
                             
-                            if len(checkpoints) >= args.logger.checkpoints_total_limit:
-                                num_to_remove = len(checkpoints) - args.logger.checkpoints_total_limit + 1
-                                removing_checkpoints = checkpoints[0:num_to_remove]
+                    #         if len(checkpoints) >= args.logger.checkpoints_total_limit:
+                    #             num_to_remove = len(checkpoints) - args.logger.checkpoints_total_limit + 1
+                    #             removing_checkpoints = checkpoints[0:num_to_remove]
 
-                                logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                )
-                                logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+                    #             logger.info(
+                    #                 f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                    #             )
+                    #             logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
-                                for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
+                    #             for removing_checkpoint in removing_checkpoints:
+                    #                 removing_checkpoint = os.path.join(args.output_dir, removing_checkpoint)
+                    #                 shutil.rmtree(removing_checkpoint)
                                         
-                    accelerator.wait_for_everyone()
-                    save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                    accelerator.save_state(save_path)
-                    ### save token_abstraction_dict here!!!
-                    with open(f"{save_path}/tokens.json", "w") as file:
-                        json.dump(token_abstraction_dict, file, indent=4)
+                    # accelerator.wait_for_everyone()
+                    # save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                    # accelerator.save_state(save_path)
+                    # ### save token_abstraction_dict here!!!
+                    # with open(f"{save_path}/tokens.json", "w") as file:
+                    #     json.dump(token_abstraction_dict, file, indent=4)
 
-                    if args.pivotal_tuning["pivotal_tuning"]:
-                        embedding_handler.save_embeddings(
-                            f"{args.output_dir}/{Path(args.output_dir).name}_emb_checkpoint_{global_step}.safetensors"
-                        )
-                    ## saving the tokenizer here so that it has the new tokens
-                    if accelerator.is_main_process:
-                        text_tokenizer.save_pretrained(os.path.join(save_path, 'tokenizer'))
-                    logger.info(f"Saved state to {save_path}")
+                    # if args.pivotal_tuning["pivotal_tuning"]:
+                    #     embedding_handler.save_embeddings(
+                    #         f"{args.output_dir}/{Path(args.output_dir).name}_emb_checkpoint_{global_step}.safetensors"
+                    #     )
+                    # ## saving the tokenizer here so that it has the new tokens
+                    # if accelerator.is_main_process:
+                    #     text_tokenizer.save_pretrained(os.path.join(save_path, 'tokenizer'))
+                    # logger.info(f"Saved state to {save_path}")
                     
                 if accelerator.is_main_process:
                     if 'train_visualization_steps' in args.val and (global_step - 1) % args.val.train_visualization_steps == 0:
@@ -919,6 +969,13 @@ def main(args):
             if 'max_train_steps' in args.train and global_step >= args.train.max_train_steps:
                 break
 
+        ### we can save per epoch instead here!!!
+        ## we need to mean/sum the losses of mini batches though!!
+        # if accelerator.is_main_process:
+            # mean_epoch_loss = sum(mean_epoch_loss)
+            # save_checkpoint(accelerator, args, global_step, mean_epoch_loss, logger, embedding_handler, text_tokenizer)
+
+
     checkpoints = os.listdir(args.output_dir)
     checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
     checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
@@ -939,13 +996,19 @@ def main(args):
                         shutil.rmtree(removing_checkpoint)
 
         accelerator.wait_for_everyone()
+
+        ### the below is for storing the last checkpoint
         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
         accelerator.save_state(save_path)
         if args.pivotal_tuning["pivotal_tuning"]:
             embedding_handler.save_embeddings(
                 f"{args.output_dir}/{Path(args.output_dir).name}_emb_checkpoint_{global_step}.safetensors"
             )
-        logger.info(f"Saved state to {save_path}")
+        # if accelerator.is_main_process:
+        text_tokenizer.save_pretrained(os.path.join(save_path, 'tokenizer'))
+        with open(f"{save_path}/tokens.json", "w") as file:
+            json.dump(token_abstraction_dict, file, indent=4)
+        logger.info(f"Saved last step state to {save_path} since it wasn't saved in the training loop")
 
     accelerator.end_training()
 

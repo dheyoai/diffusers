@@ -519,7 +519,7 @@ def main(args):
             initializer_concept=args.pivotal_tuning.get('initializer_concept'),
             token_abstraction=args.pivotal_tuning.get('token_abstraction'),
             token_abstraction_dict=token_abstraction_dict if args.pivotal_tuning["pivotal_tuning"] else None,
-            output_dir=args.output_dir 
+            # output_dir=args.output_dir 
         )
 
     # default: 1000 steps, linear noise schedule
@@ -723,32 +723,32 @@ def main(args):
             embedding_handler.save_embeddings(
                 f"{args.output_dir}/{Path(args.output_dir).name}_emb_checkpoint_{global_step}.safetensors"
             )
+    
+        text_tokenizer.save_pretrained(os.path.join(save_path, 'tokenizer'))
         
         if accelerator.is_main_process:
-            text_tokenizer.save_pretrained(os.path.join(save_path, 'tokenizer'))
-        
-        heapq.heappush(best_checkpoints, (-avg_total_loss, global_step)) ## maintaining a max heap
-        
-        # import pdb; pdb.set_trace()
-        # Keep only top 3 checkpoints with lowest loss
-        if len(best_checkpoints) > 3:
-            checkpoints = os.listdir(args.output_dir)
-            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+            heapq.heappush(best_checkpoints, (-avg_total_loss, global_step)) ## maintaining a max heap
             
-            # if len(checkpoints) >= args.logger.checkpoints_total_limit:
-            worst_loss, worst_step = heapq.heappop(best_checkpoints)
-            worst_checkpoint = f"checkpoint-{worst_step}"
+            # import pdb; pdb.set_trace()
+            # Keep only top 3 checkpoints with lowest loss
+            if len(best_checkpoints) > 3:
+                checkpoints = os.listdir(args.output_dir)
+                checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+                checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+                
+                # if len(checkpoints) >= args.logger.checkpoints_total_limit:
+                worst_loss, worst_step = heapq.heappop(best_checkpoints)
+                worst_checkpoint = f"checkpoint-{worst_step}"
+                
+                if worst_checkpoint in checkpoints:
+                    remove_path = os.path.join(args.output_dir, worst_checkpoint)
+                    logger.info(f"Removing checkpoint with highest loss: {worst_checkpoint} (loss: {worst_loss * -1})")
+                    shutil.rmtree(remove_path)
             
-            if worst_checkpoint in checkpoints:
-                remove_path = os.path.join(args.output_dir, worst_checkpoint)
-                logger.info(f"Removing checkpoint with highest loss: {worst_checkpoint} (loss: {worst_loss * -1})")
-                shutil.rmtree(remove_path)
-        
-        og_max_heap = [(-x[0], x[1]) for x in best_checkpoints]
-        with open(f"{save_path}/max_loss_heap_original.json", 'w') as f:
-            json.dump(og_max_heap, f)
-        logger.info(f"Saved state to {save_path} (loss: {avg_total_loss})")
+            og_max_heap = [(-x[0], x[1]) for x in best_checkpoints]
+            with open(f"{args.output_dir}/max_loss_heap_original.json", 'w') as f:
+                json.dump(og_max_heap, f)
+            logger.info(f"Saved state to {save_path} (loss: {avg_total_loss})")
 
 
     for epoch in range(first_epoch, args.train.num_train_epochs):
@@ -882,8 +882,8 @@ def main(args):
                 global_step += 1
 
                 if global_step % args.logger.checkpointing_steps == 0:
-                    if accelerator.is_main_process:
-                        save_checkpoint(accelerator, args, global_step, avg_total_loss.item(), logger, embedding_handler, text_tokenizer)
+                    # if accelerator.is_main_process:
+                    save_checkpoint(accelerator, args, global_step, avg_total_loss.item(), logger, embedding_handler, text_tokenizer)
                     # if accelerator.is_main_process:
                     #     if args.logger.checkpoints_total_limit is not None:
                     #         checkpoints = os.listdir(args.output_dir)

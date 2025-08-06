@@ -519,7 +519,7 @@ def main(args):
             initializer_concept=args.pivotal_tuning.get('initializer_concept'),
             token_abstraction=args.pivotal_tuning.get('token_abstraction'),
             token_abstraction_dict=token_abstraction_dict if args.pivotal_tuning["pivotal_tuning"] else None,
-            # output_dir=args.output_dir 
+            output_dir=args.output_dir 
         )
 
     # default: 1000 steps, linear noise schedule
@@ -752,7 +752,7 @@ def main(args):
 
 
     for epoch in range(first_epoch, args.train.num_train_epochs):
-        # mean_epoch_loss = []
+        mean_epoch_loss = []
         if 'max_train_steps' in args.train and global_step >= args.train.max_train_steps:
             break
         for step, batch in enumerate(train_dataloader):
@@ -869,7 +869,7 @@ def main(args):
             if accelerator.sync_gradients:
                 logs = {"loss": avg_loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
                 logs["total_loss"] = avg_total_loss.detach().item()
-                # mean_epoch_loss.append(logs["total_loss"])
+                mean_epoch_loss.append(logs["total_loss"])
 
                 for i in range(n_loss_bins):
                     if bin_occurrence[i] > 0:
@@ -881,9 +881,12 @@ def main(args):
                     
                 global_step += 1
 
-                if global_step % args.logger.checkpointing_steps == 0:
-                    # if accelerator.is_main_process:
-                    save_checkpoint(accelerator, args, global_step, avg_total_loss.item(), logger, embedding_handler, text_tokenizer)
+                ###
+                # if global_step % args.logger.checkpointing_steps == 0:
+                    # save_checkpoint(accelerator, args, global_step, avg_total_loss.item(), logger, embedding_handler, text_tokenizer)
+                    
+                ###
+                    
                     # if accelerator.is_main_process:
                     #     if args.logger.checkpoints_total_limit is not None:
                     #         checkpoints = os.listdir(args.output_dir)
@@ -969,11 +972,12 @@ def main(args):
             if 'max_train_steps' in args.train and global_step >= args.train.max_train_steps:
                 break
 
-        ### we can save per epoch instead here!!!
-        ## we need to mean/sum the losses of mini batches though!!
+        ## we can save per epoch instead here!!!
+        # we need to mean/sum the losses of mini batches though!!
         # if accelerator.is_main_process:
-            # mean_epoch_loss = sum(mean_epoch_loss)
-            # save_checkpoint(accelerator, args, global_step, mean_epoch_loss, logger, embedding_handler, text_tokenizer)
+        print(f"\n\n{mean_epoch_loss} - len: {len(mean_epoch_loss)}\n\n")
+        mean_epoch_loss = sum(mean_epoch_loss)/len(mean_epoch_loss)
+        save_checkpoint(accelerator, args, global_step, mean_epoch_loss, logger, embedding_handler, text_tokenizer)
 
 
     checkpoints = os.listdir(args.output_dir)

@@ -219,15 +219,15 @@ class OmniGen2ImageProcessor(VaeImageProcessor):
                 height, width = self.get_new_height_width(image[0], height, width, max_pixels, max_side_length)
                 image = [self.resize(i, height, width, resize_mode=resize_mode) for i in image]
                 ## saving intermediate processed images here!!
-                try:
-                    import time
-                    # import os
-                    # os.makedirs(os.path.dirname(args.output_image_path), exist_ok=True)
-                    timestamp = str(time.strftime("%d-%m-%y_%H-%M-%S"))
-                    image[0].save(f"{output_dir}/preprocessed_image_{timestamp}.png")
-                    print("Saved preprocessed image!!")
-                except:
-                    pass
+                # try:
+                #     import time
+                #     # import os
+                #     # os.makedirs(os.path.dirname(args.output_image_path), exist_ok=True)
+                #     timestamp = str(time.strftime("%d-%m-%y_%H-%M-%S"))
+                #     image[0].save(f"{output_dir}/preprocessed_image_{timestamp}.png")
+                #     print("Saved preprocessed image!!")
+                # except:
+                #     pass
             if self.config.do_convert_rgb:
                 image = [self.convert_to_rgb(i) for i in image]
             elif self.config.do_convert_grayscale:

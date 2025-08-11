@@ -1,4 +1,4 @@
-# Fine-Tuning OmniGen2 LoRA Dreambooth Using UI Using a Single GPU
+# Fine-Tuning OmniGen2 LoRA Dreambooth With UI Using a Single GPU
 
 ## Install Additonal Requirements
 

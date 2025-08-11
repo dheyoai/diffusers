@@ -172,10 +172,10 @@ def log_time_distribution(transport, device, args):
 
 
 class TokenEmbeddingsHandler:
-    def __init__(self, text_encoder, tokenizer):
+    def __init__(self, args, text_encoder, tokenizer):
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
-
+        self.args = args
         self.train_ids: Optional[torch.Tensor] = None
         self.inserting_toks: Optional[List[str]] = None
         self.embeddings_settings = {}
@@ -219,7 +219,7 @@ class TokenEmbeddingsHandler:
         #     )
         # else:
             # Convert the initializer_token, placeholder_token to ids
-        initializer_token_ids = self.tokenizer.encode(args.pivotal_tuning.initializer_concept, add_special_tokens=False)
+        initializer_token_ids = self.tokenizer.encode(self.args.pivotal_tuning.initializer_concept, add_special_tokens=False)
         for token_idx, token_id in enumerate(train_ids):
             embeds.weight.data[token_id] = (embeds.weight.data)[
                 initializer_token_ids[token_idx % len(initializer_token_ids)]
@@ -370,7 +370,7 @@ def main(args):
         print(f"\n\nTOKEN ABSTRACTION DICT: {token_abstraction_dict}\n\n")
 
         if args.pivotal_tuning['pivotal_tuning']:
-            embedding_handler = TokenEmbeddingsHandler(text_encoder, text_tokenizer)
+            embedding_handler = TokenEmbeddingsHandler(args, text_encoder, text_tokenizer)
             inserting_toks = []
             for new_tok in token_abstraction_dict.values():
                 inserting_toks.extend(new_tok)

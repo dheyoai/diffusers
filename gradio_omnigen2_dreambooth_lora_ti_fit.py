@@ -179,11 +179,11 @@ def recursive_update(d, u):
                 # dataset_components[-1]['sample_3'],
                 # use_more_advanced_options,
                 # more_advanced_options
-import queue
-output_queue = queue.Queue()
-from contextlib import redirect_stdout, redirect_stderr
-import io 
-import subprocess
+# import queue
+# output_queue = queue.Queue()
+# from contextlib import redirect_stdout, redirect_stderr
+# import io 
+# import subprocess
 
 def start_training(
     lora_name,
@@ -199,9 +199,9 @@ def start_training(
     dataset_folder_1,
     dataset_folder_2,
     dataset_folder_3,
-    sample_1,
-    sample_2,
-    sample_3,
+    # sample_1,
+    # sample_2,
+    # sample_3,
     use_more_advanced_options,
     more_advanced_options,
 ):
@@ -610,26 +610,26 @@ with gr.Blocks(theme=theme, css=css) as demo:
                     outputs=[captioning_area]
                 )
 
-        with gr.Accordion(f"Sample prompts for dataset (optional)", visible=True) as sample:
-            gr.Markdown(
-                f"Include sample prompts to test out your trained model. Include your trigger word/sentence."
-            )
-            sample_1 = gr.Textbox(placeholder="Test prompt 1")
-            sample_2 = gr.Textbox(placeholder="Test prompt 2")
-            sample_3 = gr.Textbox(placeholder="Test prompt 3")
+        # with gr.Accordion(f"Sample prompts for dataset (optional)", visible=True) as sample:
+        #     gr.Markdown(
+        #         f"Include sample prompts to test out your trained model. Include your trigger word/sentence."
+        #     )
+        #     sample_1 = gr.Textbox(placeholder="Test prompt 1")
+        #     sample_2 = gr.Textbox(placeholder="Test prompt 2")
+        #     sample_3 = gr.Textbox(placeholder="Test prompt 3")
         
-        output_components.extend([sample, sample_1, sample_2, sample_3])
-        dataset_components.append({
-            'sample': sample,
-            'sample_1': sample_1,
-            'sample_2': sample_2,
-            'sample_3': sample_3
-        })
-        images.clear(
-            hide_captioning,
-            # outputs=[captioning_area, sample]
-            outputs=[sample]
-        )
+        # output_components.extend([sample, sample_1, sample_2, sample_3])
+        # dataset_components.append({
+        #     'sample': sample,
+        #     'sample_1': sample_1,
+        #     'sample_2': sample_2,
+        #     'sample_3': sample_3
+        # })
+        # images.clear(
+        #     hide_captioning,
+        #     # outputs=[captioning_area, sample]
+        #     outputs=[sample]
+        # )
         with gr.Accordion("Advanced options", open=False):
             steps = gr.Number(label="Steps", value=3000, minimum=1, maximum=10000, step=1)
             lr = gr.Number(label="Learning Rate", value=2e-4, minimum=1e-6, maximum=1e-3, step=1e-6)
@@ -659,8 +659,8 @@ with gr.Blocks(theme=theme, css=css) as demo:
             fn=start_training,
             inputs=[
                 lora_name,
-                *[dc['concept_token'] for dc in dataset_components[:-1]],  # <- Fixed here
-                *[dc['initializer_concept'] for dc in dataset_components[:-1]],  # <- Fixed here
+                *[dc['concept_token'] for dc in dataset_components],  # <- Fixed here
+                *[dc['initializer_concept'] for dc in dataset_components],  # <- Fixed here
                 steps,
                 lr,
                 rank,
@@ -671,9 +671,9 @@ with gr.Blocks(theme=theme, css=css) as demo:
                 dataset_state_1,
                 dataset_state_2,
                 dataset_state_3,
-                dataset_components[-1]['sample_1'],
-                dataset_components[-1]['sample_2'],
-                dataset_components[-1]['sample_3'],
+                # dataset_components[-1]['sample_1'],
+                # dataset_components[-1]['sample_2'],
+                # dataset_components[-1]['sample_3'],
                 use_more_advanced_options,
                 more_advanced_options
             ],

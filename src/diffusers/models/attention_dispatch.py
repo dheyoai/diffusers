@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import contextlib
-import functools
 import inspect
 import math
 from dataclasses import dataclass
@@ -73,8 +72,16 @@ _CAN_USE_XFORMERS_ATTN = is_xformers_available() and is_xformers_version(">=", _
 
 
 if _CAN_USE_FLASH_ATTN:
-    from flash_attn import flash_attn_func, flash_attn_varlen_func
-    from flash_attn.flash_attn_interface import _wrapped_flash_attn_backward, _wrapped_flash_attn_forward
+    try:
+        from flash_attn import flash_attn_func, flash_attn_varlen_func
+        from flash_attn.flash_attn_interface import _wrapped_flash_attn_backward, _wrapped_flash_attn_forward
+    except (ImportError, OSError):
+        # flash_attn package installed but native extension fails to load (ABI mismatch)
+        _CAN_USE_FLASH_ATTN = False
+        flash_attn_func = None
+        flash_attn_varlen_func = None
+        _wrapped_flash_attn_backward = None
+        _wrapped_flash_attn_forward = None
 else:
     flash_attn_func = None
     flash_attn_varlen_func = None
@@ -501,22 +508,45 @@ def _check_attention_backend_requirements(backend: AttentionBackendName) -> None
             )
 
 
-@functools.lru_cache(maxsize=128)
+_varlen_cache: dict = {}
+
+
 def _prepare_for_flash_attn_or_sage_varlen_without_mask(
     batch_size: int,
     seq_len_q: int,
     seq_len_kv: int,
     device: torch.device | None = None,
 ):
+    # Cache in eager mode only.  Under torch.compile, Dynamo must trace tensor
+    # creation each time (returning stale real tensors from lru_cache confuses
+    # the FakeTensor / graph-node machinery and triggers the Inductor
+    # `pointless_cumsum_replacement` crash on recompilation).
+    if not torch.compiler.is_compiling():
+        cache_key = (batch_size, seq_len_q, seq_len_kv, device)
+        if cache_key in _varlen_cache:
+            return _varlen_cache[cache_key]
+
     seqlens_q = torch.full((batch_size,), seq_len_q, dtype=torch.int32, device=device)
     seqlens_k = torch.full((batch_size,), seq_len_kv, dtype=torch.int32, device=device)
-    cu_seqlens_q = torch.zeros(batch_size + 1, dtype=torch.int32, device=device)
-    cu_seqlens_k = torch.zeros(batch_size + 1, dtype=torch.int32, device=device)
-    cu_seqlens_q[1:] = torch.cumsum(seqlens_q, dim=0)
-    cu_seqlens_k[1:] = torch.cumsum(seqlens_k, dim=0)
-    max_seqlen_q = seqlens_q.max().item()
-    max_seqlen_k = seqlens_k.max().item()
-    return (seqlens_q, seqlens_k), (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k)
+    # Build cu_seqlens directly with arange * stride instead of torch.cumsum.
+    # For uniform seqlens (torch.full), cumsum([s, s, s, ...]) = [s, 2s, 3s, ...],
+    # so cu_seqlens = [0, s, 2s, ..., B*s] = arange(B+1) * s.
+    # This avoids the Inductor `pointless_cumsum_replacement` pattern matcher bug
+    # that crashes on recompilation with different shapes (FakeTensor * Node TypeError).
+    cu_seqlens_q = torch.arange(batch_size + 1, dtype=torch.int32, device=device) * seq_len_q
+    cu_seqlens_k = torch.arange(batch_size + 1, dtype=torch.int32, device=device) * seq_len_kv
+    # Use the known Python int values directly instead of .max().item() which
+    # causes a graph break under torch.compile (Tensor.item() is not traceable).
+    # Since seqlens_q/k are created with torch.full, the max equals the fill value.
+    max_seqlen_q = seq_len_q
+    max_seqlen_k = seq_len_kv
+
+    result = (seqlens_q, seqlens_k), (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k)
+
+    if not torch.compiler.is_compiling():
+        _varlen_cache[cache_key] = result
+
+    return result
 
 
 def _prepare_for_flash_attn_or_sage_varlen_with_mask(
@@ -527,12 +557,23 @@ def _prepare_for_flash_attn_or_sage_varlen_with_mask(
 ):
     seqlens_q = torch.full((batch_size,), seq_len_q, dtype=torch.int32, device=device)
     seqlens_k = attn_mask.sum(dim=1, dtype=torch.int32)
-    cu_seqlens_q = torch.zeros(batch_size + 1, dtype=torch.int32, device=device)
+    # cu_seqlens_q: uniform, use arange * stride to avoid cumsum (Inductor bug workaround)
+    cu_seqlens_q = torch.arange(batch_size + 1, dtype=torch.int32, device=device) * seq_len_q
+    # cu_seqlens_k: non-uniform (mask-dependent), cumsum is required here.
+    # This path is only taken with actual masks (uncommon in inference), so the
+    # Inductor pattern matcher issue is less likely to trigger.
     cu_seqlens_k = torch.zeros(batch_size + 1, dtype=torch.int32, device=device)
-    cu_seqlens_q[1:] = torch.cumsum(seqlens_q, dim=0)
     cu_seqlens_k[1:] = torch.cumsum(seqlens_k, dim=0)
-    max_seqlen_q = seqlens_q.max().item()
-    max_seqlen_k = seqlens_k.max().item()
+    # seqlens_q is uniform (torch.full), so max is the fill value — avoids .item() graph break.
+    max_seqlen_q = seq_len_q
+    # seqlens_k depends on the mask. Use attn_mask.shape[1] as an upper bound
+    # instead of seqlens_k.max().item() to avoid a CPU-GPU sync that would:
+    # (1) cause a torch.compile graph break, and
+    # (2) prevent CUDA graph capture.
+    # For QWEN-2512 with B=1 and no padding, attn_mask is all-True so this
+    # upper bound equals the exact value. For padded inputs, using the
+    # sequence dimension as max_seqlen_k is safe (FlashAttention handles it).
+    max_seqlen_k = attn_mask.shape[1]
     return (seqlens_q, seqlens_k), (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k)
 
 
@@ -651,7 +692,7 @@ def _wrapped_flash_attn_3(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     # Hardcoded for now because pytorch does not support tuple/int type hints
     window_size = (-1, -1)
-    out, lse, *_ = flash_attn_3_func(
+    result = flash_attn_3_func(
         q=q,
         k=k,
         v=v,
@@ -668,7 +709,9 @@ def _wrapped_flash_attn_3(
         pack_gqa=pack_gqa,
         deterministic=deterministic,
         sm_margin=sm_margin,
+        return_attn_probs=True,
     )
+    out, lse = result[0], result[1]
     lse = lse.permute(0, 2, 1)
     return out, lse
 
@@ -2014,11 +2057,28 @@ def _flash_varlen_attention_hub(
     return_lse: bool = False,
     _parallel_config: "ParallelConfig" | None = None,
 ) -> torch.Tensor:
+    # Fast path: no mask means all tokens are valid — use the non-varlen hub
+    # kernel directly, avoiding cu_seqlens computation and batch flattening.
+    if attn_mask is None:
+        func = _HUB_KERNELS_REGISTRY[AttentionBackendName.FLASH_HUB].kernel_fn
+        out = func(
+            q=query,
+            k=key,
+            v=value,
+            dropout_p=dropout_p,
+            softmax_scale=scale,
+            causal=is_causal,
+            return_attn_probs=return_lse,
+        )
+        if return_lse:
+            out, lse, *_ = out
+            return (out, lse)
+        return out
+
     batch_size, seq_len_q, _, _ = query.shape
     _, seq_len_kv, _, _ = key.shape
 
-    if attn_mask is not None:
-        attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
+    attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
 
     (_, seqlens_k), (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k) = (
         _prepare_for_flash_attn_or_sage_varlen(
@@ -2070,11 +2130,28 @@ def _flash_varlen_attention(
     return_lse: bool = False,
     _parallel_config: "ParallelConfig" | None = None,
 ) -> torch.Tensor:
+    # Fast path: no mask means all tokens are valid — use the non-varlen kernel
+    # directly.  This avoids cu_seqlens computation, batch-dim flattening, and
+    # the varlen kernel's extra index arithmetic overhead.
+    if attn_mask is None:
+        out = flash_attn_func(
+            q=query,
+            k=key,
+            v=value,
+            dropout_p=dropout_p,
+            softmax_scale=scale,
+            causal=is_causal,
+            return_attn_probs=return_lse,
+        )
+        if return_lse:
+            out, lse, *_ = out
+            return (out, lse)
+        return out
+
     batch_size, seq_len_q, _, _ = query.shape
     _, seq_len_kv, _, _ = key.shape
 
-    if attn_mask is not None:
-        attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
+    attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
 
     (_, seqlens_k), (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k) = (
         _prepare_for_flash_attn_or_sage_varlen(
@@ -2199,11 +2276,36 @@ def _flash_attention_3_varlen_hub(
     return_lse: bool = False,
     _parallel_config: "ParallelConfig" | None = None,
 ) -> torch.Tensor:
+    # Fast path: no mask means all tokens are valid — use the non-varlen hub
+    # kernel directly, avoiding cu_seqlens computation and batch flattening.
+    if attn_mask is None:
+        func = _HUB_KERNELS_REGISTRY[AttentionBackendName._FLASH_3_HUB].kernel_fn
+        out = func(
+            q=query,
+            k=key,
+            v=value,
+            softmax_scale=scale,
+            causal=is_causal,
+            qv=None,
+            q_descale=None,
+            k_descale=None,
+            v_descale=None,
+            window_size=(-1, -1),
+            softcap=0.0,
+            num_splits=1,
+            pack_gqa=None,
+            deterministic=False,
+            sm_margin=0,
+            return_attn_probs=return_lse,
+        )
+        if return_lse:
+            return (out[0], out[1])
+        return out
+
     batch_size, seq_len_q, _, _ = query.shape
     _, seq_len_kv, _, _ = key.shape
 
-    if attn_mask is not None:
-        attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
+    attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
 
     (_, seqlens_k), (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k) = (
         _prepare_for_flash_attn_or_sage_varlen(
@@ -2252,11 +2354,23 @@ def _flash_varlen_attention_3(
     return_lse: bool = False,
     _parallel_config: "ParallelConfig" | None = None,
 ) -> torch.Tensor:
+    # Fast path: no mask means all tokens are valid — use the non-varlen kernel
+    # directly.  This avoids cu_seqlens computation, batch-dim flattening, and
+    # the varlen kernel's extra index arithmetic overhead.
+    if attn_mask is None:
+        out, lse = _wrapped_flash_attn_3(
+            q=query,
+            k=key,
+            v=value,
+            softmax_scale=scale,
+            causal=is_causal,
+        )
+        return (out, lse) if return_lse else out
+
     batch_size, seq_len_q, _, _ = query.shape
     _, seq_len_kv, _, _ = key.shape
 
-    if attn_mask is not None:
-        attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
+    attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
 
     (_, seqlens_k), (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k) = (
         _prepare_for_flash_attn_or_sage_varlen(
@@ -2264,17 +2378,18 @@ def _flash_varlen_attention_3(
         )
     )
 
+    query_packed = query.flatten(0, 1)
+
+    # With masking: extract valid tokens per batch element
     key_valid, value_valid = [], []
     for b in range(batch_size):
         valid_len = seqlens_k[b]
         key_valid.append(key[b, :valid_len])
         value_valid.append(value[b, :valid_len])
-
-    query_packed = query.flatten(0, 1)
     key_packed = torch.cat(key_valid, dim=0)
     value_packed = torch.cat(value_valid, dim=0)
 
-    out, lse, *_ = flash_attn_3_varlen_func(
+    result = flash_attn_3_varlen_func(
         q=query_packed,
         k=key_packed,
         v=value_packed,
@@ -2284,7 +2399,9 @@ def _flash_varlen_attention_3(
         max_seqlen_k=max_seqlen_k,
         softmax_scale=scale,
         causal=is_causal,
+        return_attn_probs=True,
     )
+    out, lse = result[0], result[1]
     out = out.unflatten(0, (batch_size, -1))
 
     return (out, lse) if return_lse else out
@@ -2862,11 +2979,23 @@ def _sage_varlen_attention(
     if return_lse:
         raise ValueError("Sage varlen backend does not support setting `return_lse=True`.")
 
+    # Fast path: no mask means all tokens are valid — use the non-varlen kernel
+    # directly, avoiding cu_seqlens computation and batch flattening.
+    if attn_mask is None:
+        return sageattn(
+            q=query,
+            k=key,
+            v=value,
+            tensor_layout="NHD",
+            is_causal=is_causal,
+            sm_scale=scale,
+            return_lse=False,
+        )
+
     batch_size, seq_len_q, _, _ = query.shape
     _, seq_len_kv, _, _ = key.shape
 
-    if attn_mask is not None:
-        attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
+    attn_mask = _normalize_attn_mask(attn_mask, batch_size, seq_len_kv)
 
     (_, seqlens_k), (cu_seqlens_q, cu_seqlens_k), (max_seqlen_q, max_seqlen_k) = (
         _prepare_for_flash_attn_or_sage_varlen(

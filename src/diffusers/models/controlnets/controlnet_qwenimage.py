@@ -65,6 +65,7 @@ class QwenImageControlNetModel(
         joint_attention_dim: int = 3584,
         axes_dims_rope: tuple[int, int, int] = (16, 56, 56),
         extra_condition_channels: int = 0,  # for controlnet-inpainting
+        use_custom_kernels: bool = False,
     ):
         super().__init__()
         self.out_channels = out_channels or in_channels
@@ -85,6 +86,7 @@ class QwenImageControlNetModel(
                     dim=self.inner_dim,
                     num_attention_heads=num_attention_heads,
                     attention_head_dim=attention_head_dim,
+                    use_custom_kernels=use_custom_kernels,
                 )
                 for _ in range(num_layers)
             ]

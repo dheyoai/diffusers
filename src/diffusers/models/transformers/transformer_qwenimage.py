@@ -14,6 +14,8 @@
 
 import functools
 import math
+import os
+
 from math import prod
 from typing import Any
 
@@ -21,6 +23,22 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# NVTX profiling support — enabled by QWEN_NVTX=1 environment variable.
+# These markers appear in Nsight Systems timelines for per-block visibility.
+_QWEN_NVTX_ENABLED = os.environ.get("QWEN_NVTX", "0") == "1"
+if _QWEN_NVTX_ENABLED:
+    try:
+        import torch.cuda.nvtx as nvtx
+        _nvtx_range_push = nvtx.range_push
+        _nvtx_range_pop = nvtx.range_pop
+    except (ImportError, AttributeError):
+        _QWEN_NVTX_ENABLED = False
+        _nvtx_range_push = lambda msg: None  # noqa: E731
+        _nvtx_range_pop = lambda: None  # noqa: E731
+else:
+    _nvtx_range_push = lambda msg: None  # noqa: E731
+    _nvtx_range_pop = lambda: None  # noqa: E731
 
 from ...configuration_utils import ConfigMixin, register_to_config
 from ...loaders import FromOriginalModelMixin, PeftAdapterMixin
@@ -38,6 +56,61 @@ from ..normalization import AdaLayerNormContinuous, RMSNorm
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def _complex_freqs_to_real(freqs_complex: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Convert complex RoPE frequencies to (cos, sin) real format.
+
+    The complex tensor has shape [S, D/2] where each element is e^(iθ) = cos(θ) + i*sin(θ).
+    The real format returns (cos, sin) each of shape [S, D] with values interleaved
+    (each frequency repeated for the pair), matching the layout expected by
+    ``apply_rotary_emb_qwen(..., use_real=True, use_real_unbind_dim=-1)``.
+
+    This conversion eliminates ``torch.view_as_complex``/``torch.view_as_real``
+    graph breaks that prevent torch.compile from consolidating the block loop.
+    """
+    cos_half = freqs_complex.real   # [S, D/2]
+    sin_half = freqs_complex.imag   # [S, D/2]
+    # Interleave: [S, D/2] -> [S, D/2, 2] -> [S, D]
+    cos_full = torch.stack([cos_half, cos_half], dim=-1).flatten(-2)
+    sin_full = torch.stack([sin_half, sin_half], dim=-1).flatten(-2)
+    return cos_full, sin_full
+
+
+# Optional import of QWEN-specific fused kernels. This keeps the transformer
+# usable even when the custom CUDA extension is not built.
+try:
+    from .kernel_ops_qwen import (  # type: ignore[import]
+        _KERNEL_DEBUG as _QWEN_KERNEL_DEBUG,
+        check_kernels_available as _qwen_kernels_available,
+        qwen_qk_norm_perhead_kernel as _qwen_qk_norm_perhead_kernel,
+        qwen_qk_norm_rope_3d_fused_kernel as _qwen_qk_norm_rope_3d_fused_kernel,
+        qwen_layernorm_modulate_kernel as _qwen_layernorm_modulate_kernel,
+        qwen_layernorm_modulate_gemm_up_kernel as _qwen_lnm_gemm_up_kernel,
+        qwen_rope_3d_fused_kernel as _qwen_rope_3d_fused_kernel,
+    )
+except Exception:  # pragma: no cover - purely defensive
+    _QWEN_KERNEL_DEBUG = False
+    _qwen_kernels_available = lambda: False  # type: ignore[assignment]
+    _qwen_qk_norm_perhead_kernel = None
+    _qwen_qk_norm_rope_3d_fused_kernel = None
+    _qwen_layernorm_modulate_kernel = None
+    _qwen_lnm_gemm_up_kernel = None
+    _qwen_rope_3d_fused_kernel = None
+
+# Cache the kernel availability check once at import time instead of calling
+# the function ~2,160 times per image (4 calls × 540 block forward passes).
+_QWEN_KERNELS_AVAILABLE: bool = _qwen_kernels_available()
+
+# Optional import of Triton fused GEMM + gate + residual kernel.
+# Eliminates the global-memory round-trip between the output projection GEMM
+# and the subsequent gate + residual epilogue.
+try:
+    from kernex.triton import fused_gemm_gate_residual as _fused_gemm_gate_residual
+    _TRITON_FUSED_GEMM_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _fused_gemm_gate_residual = None
+    _TRITON_FUSED_GEMM_AVAILABLE = False
 
 
 def get_timestep_embedding(
@@ -116,17 +189,25 @@ def apply_rotary_emb_qwen(
     """
     if use_real:
         cos, sin = freqs_cis  # [S, D]
-        cos = cos[None, None]
-        sin = sin[None, None]
         cos, sin = cos.to(x.device), sin.to(x.device)
 
+        if x.ndim == 4:
+            # x: [B, S, H, D] — attention Q/K tensor with explicit head dim.
+            # cos/sin: [S, D] -> [1, S, 1, D] to broadcast over B and H.
+            cos = cos[None, :, None, :]
+            sin = sin[None, :, None, :]
+        else:
+            # x: [B, S, D] — standard 3D layout (used by flux, etc.)
+            cos = cos[None, None]
+            sin = sin[None, None]
+
         if use_real_unbind_dim == -1:
-            # Used for flux, cogvideox, hunyuan-dit
-            x_real, x_imag = x.reshape(*x.shape[:-1], -1, 2).unbind(-1)  # [B, S, H, D//2]
-            x_rotated = torch.stack([-x_imag, x_real], dim=-1).flatten(3)
+            # Used for flux, cogvideox, hunyuan-dit, qwen text RoPE
+            x_real, x_imag = x.reshape(*x.shape[:-1], -1, 2).unbind(-1)  # [..., D//2]
+            x_rotated = torch.stack([-x_imag, x_real], dim=-1).flatten(-2)
         elif use_real_unbind_dim == -2:
             # Used for Stable Audio, OmniGen, CogView4 and Cosmos
-            x_real, x_imag = x.reshape(*x.shape[:-1], 2, -1).unbind(-2)  # [B, S, H, D//2]
+            x_real, x_imag = x.reshape(*x.shape[:-1], 2, -1).unbind(-2)  # [..., D//2]
             x_rotated = torch.cat([-x_imag, x_real], dim=-1)
         else:
             raise ValueError(f"`use_real_unbind_dim={use_real_unbind_dim}` but should be -1 or -2.")
@@ -204,24 +285,28 @@ class QwenEmbedRope(nn.Module):
         self.axes_dim = axes_dim
         pos_index = torch.arange(4096)
         neg_index = torch.arange(4096).flip(0) * -1 - 1
-        self.pos_freqs = torch.cat(
-            [
+        # persistent=False avoids complex-dtype serialisation issues while
+        # ensuring buffers move with .to(device), eliminating per-forward
+        # .to(device) calls that cause torch.compile graph breaks.
+        self.register_buffer(
+            "pos_freqs",
+            torch.cat([
                 self.rope_params(pos_index, self.axes_dim[0], self.theta),
                 self.rope_params(pos_index, self.axes_dim[1], self.theta),
                 self.rope_params(pos_index, self.axes_dim[2], self.theta),
-            ],
-            dim=1,
+            ], dim=1),
+            persistent=False,
         )
-        self.neg_freqs = torch.cat(
-            [
+        self.register_buffer(
+            "neg_freqs",
+            torch.cat([
                 self.rope_params(neg_index, self.axes_dim[0], self.theta),
                 self.rope_params(neg_index, self.axes_dim[1], self.theta),
                 self.rope_params(neg_index, self.axes_dim[2], self.theta),
-            ],
-            dim=1,
+            ], dim=1),
+            persistent=False,
         )
 
-        # DO NOT USING REGISTER BUFFER HERE, IT WILL CAUSE COMPLEX NUMBERS LOSE ITS IMAGINARY PART
         self.scale_rope = scale_rope
 
     def rope_params(self, index, dim, theta=10000):
@@ -301,19 +386,23 @@ class QwenEmbedRope(nn.Module):
                 max_vid_index = max(height, width, max_vid_index)
 
         max_txt_seq_len_int = int(max_txt_seq_len)
-        # Create device-specific copy for text freqs without modifying self.pos_freqs
-        txt_freqs = self.pos_freqs.to(device)[max_vid_index : max_vid_index + max_txt_seq_len_int, ...]
-        vid_freqs = torch.cat(vid_freqs, dim=0)
+        txt_freqs_complex = self.pos_freqs[max_vid_index : max_vid_index + max_txt_seq_len_int, ...]
+        vid_freqs_complex = torch.cat(vid_freqs, dim=0)
 
-        return vid_freqs, txt_freqs
+        # Return complex tensors directly. The attention processor auto-detects
+        # the format (complex tensor vs (cos, sin) tuple) and selects the
+        # appropriate RoPE path. Complex arithmetic uses zero-copy views
+        # (view_as_complex/view_as_real) and works correctly under both eager
+        # mode and torch.compile (including reduce-overhead / CUDA graphs).
+        return vid_freqs_complex, txt_freqs_complex
 
     @functools.lru_cache(maxsize=128)
     def _compute_video_freqs(
         self, frame: int, height: int, width: int, idx: int = 0, device: torch.device = None
     ) -> torch.Tensor:
         seq_lens = frame * height * width
-        pos_freqs = self.pos_freqs.to(device) if device is not None else self.pos_freqs
-        neg_freqs = self.neg_freqs.to(device) if device is not None else self.neg_freqs
+        pos_freqs = self.pos_freqs
+        neg_freqs = self.neg_freqs
 
         freqs_pos = pos_freqs.split([x // 2 for x in self.axes_dim], dim=1)
         freqs_neg = neg_freqs.split([x // 2 for x in self.axes_dim], dim=1)
@@ -339,21 +428,26 @@ class QwenEmbedLayer3DRope(nn.Module):
         self.axes_dim = axes_dim
         pos_index = torch.arange(4096)
         neg_index = torch.arange(4096).flip(0) * -1 - 1
-        self.pos_freqs = torch.cat(
-            [
+        # persistent=False avoids complex-dtype serialisation issues while
+        # ensuring buffers move with .to(device), eliminating per-forward
+        # .to(device) calls that cause torch.compile graph breaks.
+        self.register_buffer(
+            "pos_freqs",
+            torch.cat([
                 self.rope_params(pos_index, self.axes_dim[0], self.theta),
                 self.rope_params(pos_index, self.axes_dim[1], self.theta),
                 self.rope_params(pos_index, self.axes_dim[2], self.theta),
-            ],
-            dim=1,
+            ], dim=1),
+            persistent=False,
         )
-        self.neg_freqs = torch.cat(
-            [
+        self.register_buffer(
+            "neg_freqs",
+            torch.cat([
                 self.rope_params(neg_index, self.axes_dim[0], self.theta),
                 self.rope_params(neg_index, self.axes_dim[1], self.theta),
                 self.rope_params(neg_index, self.axes_dim[2], self.theta),
-            ],
-            dim=1,
+            ], dim=1),
+            persistent=False,
         )
 
         self.scale_rope = scale_rope
@@ -422,17 +516,17 @@ class QwenEmbedLayer3DRope(nn.Module):
 
         max_vid_index = max(max_vid_index, layer_num)
         max_txt_seq_len_int = int(max_txt_seq_len)
-        # Create device-specific copy for text freqs without modifying self.pos_freqs
-        txt_freqs = self.pos_freqs.to(device)[max_vid_index : max_vid_index + max_txt_seq_len_int, ...]
-        vid_freqs = torch.cat(vid_freqs, dim=0)
+        txt_freqs_complex = self.pos_freqs[max_vid_index : max_vid_index + max_txt_seq_len_int, ...]
+        vid_freqs_complex = torch.cat(vid_freqs, dim=0)
 
-        return vid_freqs, txt_freqs
+        # Return complex tensors directly — see QwenEmbedRope.forward() comment.
+        return vid_freqs_complex, txt_freqs_complex
 
     @functools.lru_cache(maxsize=None)
     def _compute_video_freqs(self, frame, height, width, idx=0, device: torch.device = None):
         seq_lens = frame * height * width
-        pos_freqs = self.pos_freqs.to(device) if device is not None else self.pos_freqs
-        neg_freqs = self.neg_freqs.to(device) if device is not None else self.neg_freqs
+        pos_freqs = self.pos_freqs
+        neg_freqs = self.neg_freqs
 
         freqs_pos = pos_freqs.split([x // 2 for x in self.axes_dim], dim=1)
         freqs_neg = neg_freqs.split([x // 2 for x in self.axes_dim], dim=1)
@@ -453,8 +547,8 @@ class QwenEmbedLayer3DRope(nn.Module):
     @functools.lru_cache(maxsize=None)
     def _compute_condition_freqs(self, frame, height, width, device: torch.device = None):
         seq_lens = frame * height * width
-        pos_freqs = self.pos_freqs.to(device) if device is not None else self.pos_freqs
-        neg_freqs = self.neg_freqs.to(device) if device is not None else self.neg_freqs
+        pos_freqs = self.pos_freqs
+        neg_freqs = self.neg_freqs
 
         freqs_pos = pos_freqs.split([x // 2 for x in self.axes_dim], dim=1)
         freqs_neg = neg_freqs.split([x // 2 for x in self.axes_dim], dim=1)
@@ -471,6 +565,54 @@ class QwenEmbedLayer3DRope(nn.Module):
 
         freqs = torch.cat([freqs_frame, freqs_height, freqs_width], dim=-1).reshape(seq_lens, -1)
         return freqs.clone().contiguous()
+
+
+# Pre-allocated joint Q/K/V buffer cache for eliminating torch.cat in attention.
+# Keys are (batch_size, total_seq_len, num_heads, head_dim, device) tuples.
+# This eliminates 3 torch.cat calls per block (55ms total across 60 blocks × 9 steps).
+_joint_qkv_buffers: dict = {}
+
+
+def _get_joint_buffer(
+    key: str, batch_size: int, total_seq: int, num_heads: int, head_dim: int,
+    dtype: torch.dtype, device: torch.device,
+) -> torch.Tensor:
+    """Get or allocate a pre-allocated joint Q/K/V buffer."""
+    cache_key = (key, batch_size, total_seq, num_heads, head_dim, device)
+    buf = _joint_qkv_buffers.get(cache_key)
+    if buf is not None and buf.dtype == dtype:
+        return buf
+    buf = torch.empty(batch_size, total_seq, num_heads, head_dim, dtype=dtype, device=device)
+    _joint_qkv_buffers[cache_key] = buf
+    return buf
+
+
+# Buffer cache for flattened attention output to avoid per-block allocation.
+_attn_output_buffers: dict = {}
+
+
+def _get_attn_flat_buffer(
+    batch_size: int, total_seq: int, inner_dim: int,
+    dtype: torch.dtype, device: torch.device,
+) -> torch.Tensor:
+    """Get or allocate a buffer for flattened attention output."""
+    cache_key = (batch_size, total_seq, inner_dim, device)
+    buf = _attn_output_buffers.get(cache_key)
+    if buf is not None and buf.dtype == dtype:
+        return buf
+    buf = torch.empty(batch_size, total_seq, inner_dim, dtype=dtype, device=device)
+    _attn_output_buffers[cache_key] = buf
+    return buf
+
+
+def clear_buffer_caches() -> None:
+    """Free all module-level CUDA tensor caches to reclaim VRAM.
+
+    Call this between pipeline loads (e.g., in aspect-ratio sweeps) to prevent
+    OOM from accumulated buffers across different resolutions.
+    """
+    _joint_qkv_buffers.clear()
+    _attn_output_buffers.clear()
 
 
 class QwenDoubleStreamAttnProcessor2_0:
@@ -494,23 +636,34 @@ class QwenDoubleStreamAttnProcessor2_0:
         hidden_states: torch.FloatTensor,  # Image stream
         encoder_hidden_states: torch.FloatTensor = None,  # Text stream
         encoder_hidden_states_mask: torch.FloatTensor = None,
-        attention_mask: torch.FloatTensor | None = None,
-        image_rotary_emb: torch.Tensor | None = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        image_rotary_emb: Optional[torch.Tensor] = None,
+        rope_grid_info: Optional[Dict[str, Any]] = None,
+        skip_output_proj: bool = False,
     ) -> torch.FloatTensor:
         if encoder_hidden_states is None:
             raise ValueError("QwenDoubleStreamAttnProcessor2_0 requires encoder_hidden_states (text stream)")
 
         seq_txt = encoder_hidden_states.shape[1]
 
-        # Compute QKV for image stream (sample projections)
-        img_query = attn.to_q(hidden_states)
-        img_key = attn.to_k(hidden_states)
-        img_value = attn.to_v(hidden_states)
+        # Compute QKV projections.  When fused (via fuse_qkv_projections()),
+        # a single GEMM per stream replaces 3 separate ones.
+        if attn.fused_projections:
+            qkv = attn.to_qkv(hidden_states)
+            split_size = qkv.shape[-1] // 3
+            img_query, img_key, img_value = torch.split(qkv, split_size, dim=-1)
 
-        # Compute QKV for text stream (context projections)
-        txt_query = attn.add_q_proj(encoder_hidden_states)
-        txt_key = attn.add_k_proj(encoder_hidden_states)
-        txt_value = attn.add_v_proj(encoder_hidden_states)
+            encoder_qkv = attn.to_added_qkv(encoder_hidden_states)
+            split_size = encoder_qkv.shape[-1] // 3
+            txt_query, txt_key, txt_value = torch.split(encoder_qkv, split_size, dim=-1)
+        else:
+            img_query = attn.to_q(hidden_states)
+            img_key = attn.to_k(hidden_states)
+            img_value = attn.to_v(hidden_states)
+
+            txt_query = attn.add_q_proj(encoder_hidden_states)
+            txt_key = attn.add_k_proj(encoder_hidden_states)
+            txt_value = attn.add_v_proj(encoder_hidden_states)
 
         # Reshape for multi-head attention
         img_query = img_query.unflatten(-1, (attn.heads, -1))
@@ -521,29 +674,160 @@ class QwenDoubleStreamAttnProcessor2_0:
         txt_key = txt_key.unflatten(-1, (attn.heads, -1))
         txt_value = txt_value.unflatten(-1, (attn.heads, -1))
 
-        # Apply QK normalization
-        if attn.norm_q is not None:
-            img_query = attn.norm_q(img_query)
-        if attn.norm_k is not None:
-            img_key = attn.norm_k(img_key)
-        if attn.norm_added_q is not None:
-            txt_query = attn.norm_added_q(txt_query)
-        if attn.norm_added_k is not None:
-            txt_key = attn.norm_added_k(txt_key)
+        # Apply QK normalization + RoPE.
+        # Three paths, in order of preference:
+        #   1. Fused QK-Norm+RoPE kernel (single kernel for image Q/K: norm+rotate)
+        #   2. Separate QK-Norm kernel + separate RoPE kernel
+        #   3. PyTorch fallback
+        use_qwen_kernels = (
+            _QWEN_KERNELS_AVAILABLE
+            and getattr(attn, "_qwen_use_custom_kernels", False)
+        )
+
+        _used_fused_qk_norm_rope = False
+
+        if use_qwen_kernels:
+            B, _, H, head_dim = img_query.shape
+            if H == 24 and head_dim == 128:
+                # --- Path 1: Fused QK-Norm + 3D RoPE for image stream ---
+                if (
+                    rope_grid_info is not None
+                    and _qwen_qk_norm_rope_3d_fused_kernel is not None
+                    and attn.norm_q is not None
+                    and attn.norm_k is not None
+                ):
+                    q_weight = attn.norm_q.weight
+                    k_weight = attn.norm_k.weight
+                    eps_q = getattr(attn.norm_q, "eps", 1e-6)
+                    fused_result = _qwen_qk_norm_rope_3d_fused_kernel(
+                        img_query, img_key, q_weight, k_weight,
+                        rope_grid_info["grid_frame"],
+                        rope_grid_info["grid_height"],
+                        rope_grid_info["grid_width"],
+                        rope_grid_info["theta"],
+                        eps_q,
+                        rope_grid_info["axes_dim"],
+                        rope_grid_info["height_offset"],
+                        rope_grid_info["width_offset"],
+                    )
+                    if fused_result is not None:
+                        img_query, img_key = fused_result
+                        _used_fused_qk_norm_rope = True
+
+                # Text stream QK-Norm (always separate — no 3D RoPE fusion)
+                if attn.norm_added_q is not None and attn.norm_added_k is not None:
+                    q_weight_txt = attn.norm_added_q.weight
+                    k_weight_txt = attn.norm_added_k.weight
+                    eps_txt = getattr(attn.norm_added_q, "eps", 1e-6)
+                    if _qwen_qk_norm_perhead_kernel is not None:
+                        txt_query, txt_key = _qwen_qk_norm_perhead_kernel(
+                            txt_query, txt_key, q_weight_txt, k_weight_txt, eps=eps_txt
+                        )
+                    else:
+                        if attn.norm_added_q is not None:
+                            txt_query = attn.norm_added_q(txt_query)
+                        if attn.norm_added_k is not None:
+                            txt_key = attn.norm_added_k(txt_key)
+
+                if not _used_fused_qk_norm_rope:
+                    # --- Path 2: Separate QK-Norm kernel (image) ---
+                    if attn.norm_q is not None and attn.norm_k is not None and _qwen_qk_norm_perhead_kernel is not None:
+                        q_weight = attn.norm_q.weight
+                        k_weight = attn.norm_k.weight
+                        eps_q = getattr(attn.norm_q, "eps", 1e-6)
+                        img_query, img_key = _qwen_qk_norm_perhead_kernel(
+                            img_query, img_key, q_weight, k_weight, eps=eps_q
+                        )
+                    else:
+                        if attn.norm_q is not None:
+                            img_query = attn.norm_q(img_query)
+                        if attn.norm_k is not None:
+                            img_key = attn.norm_k(img_key)
+            else:
+                use_qwen_kernels = False
+
+        if not use_qwen_kernels:
+            if attn.norm_q is not None:
+                img_query = attn.norm_q(img_query)
+            if attn.norm_k is not None:
+                img_key = attn.norm_k(img_key)
+            if attn.norm_added_q is not None:
+                txt_query = attn.norm_added_q(txt_query)
+            if attn.norm_added_k is not None:
+                txt_key = attn.norm_added_k(txt_key)
 
         # Apply RoPE
         if image_rotary_emb is not None:
             img_freqs, txt_freqs = image_rotary_emb
-            img_query = apply_rotary_emb_qwen(img_query, img_freqs, use_real=False)
-            img_key = apply_rotary_emb_qwen(img_key, img_freqs, use_real=False)
-            txt_query = apply_rotary_emb_qwen(txt_query, txt_freqs, use_real=False)
-            txt_key = apply_rotary_emb_qwen(txt_key, txt_freqs, use_real=False)
 
-        # Concatenate for joint attention
-        # Order: [text, image]
-        joint_query = torch.cat([txt_query, img_query], dim=1)
-        joint_key = torch.cat([txt_key, img_key], dim=1)
-        joint_value = torch.cat([txt_value, img_value], dim=1)
+            if not _used_fused_qk_norm_rope:
+                # Image RoPE: try separate fused kernel, then fallback to PyTorch
+                _used_fused_rope = False
+                if rope_grid_info is not None and _qwen_rope_3d_fused_kernel is not None and use_qwen_kernels:
+                    result_q = _qwen_rope_3d_fused_kernel(
+                        img_query,
+                        rope_grid_info["grid_frame"],
+                        rope_grid_info["grid_height"],
+                        rope_grid_info["grid_width"],
+                        rope_grid_info["theta"],
+                        rope_grid_info["axes_dim"],
+                        rope_grid_info["height_offset"],
+                        rope_grid_info["width_offset"],
+                    )
+                    if result_q is not None:
+                        result_k = _qwen_rope_3d_fused_kernel(
+                            img_key,
+                            rope_grid_info["grid_frame"],
+                            rope_grid_info["grid_height"],
+                            rope_grid_info["grid_width"],
+                            rope_grid_info["theta"],
+                            rope_grid_info["axes_dim"],
+                            rope_grid_info["height_offset"],
+                            rope_grid_info["width_offset"],
+                        )
+                        if result_k is not None:
+                            img_query = result_q
+                            img_key = result_k
+                            _used_fused_rope = True
+
+                if not _used_fused_rope:
+                    # Auto-detect format: tuple → (cos, sin) real, tensor → complex.
+                    # Eager mode uses complex (faster zero-copy views); torch.compile
+                    # uses real (avoids view_as_complex/view_as_real graph breaks).
+                    _img_real = isinstance(img_freqs, tuple)
+                    img_query = apply_rotary_emb_qwen(img_query, img_freqs, use_real=_img_real, use_real_unbind_dim=-1)
+                    img_key = apply_rotary_emb_qwen(img_key, img_freqs, use_real=_img_real, use_real_unbind_dim=-1)
+
+            # Text RoPE: auto-detect format like image RoPE above.
+            _txt_real = isinstance(txt_freqs, tuple)
+            txt_query = apply_rotary_emb_qwen(txt_query, txt_freqs, use_real=_txt_real, use_real_unbind_dim=-1)
+            txt_key = apply_rotary_emb_qwen(txt_key, txt_freqs, use_real=_txt_real, use_real_unbind_dim=-1)
+
+        # Combine text and image Q/K/V into joint tensors.
+        # Under torch.compile: use torch.cat so the graph has no input mutations
+        # (in-place slice writes on cached buffers prevent CUDA graph capture).
+        # In eager mode: use pre-allocated buffers with slice writes to avoid
+        # 3 torch.cat allocations + copies per block (~55ms across all blocks).
+        if torch.compiler.is_compiling():
+            joint_query = torch.cat([txt_query, img_query], dim=1)
+            joint_key = torch.cat([txt_key, img_key], dim=1)
+            joint_value = torch.cat([txt_value, img_value], dim=1)
+        else:
+            batch_size = img_query.shape[0]
+            total_seq = seq_txt + img_query.shape[1]
+            num_heads = img_query.shape[2]
+            head_dim = img_query.shape[3]
+
+            joint_query = _get_joint_buffer("q", batch_size, total_seq, num_heads, head_dim, img_query.dtype, img_query.device)
+            joint_key = _get_joint_buffer("k", batch_size, total_seq, num_heads, head_dim, img_key.dtype, img_key.device)
+            joint_value = _get_joint_buffer("v", batch_size, total_seq, num_heads, head_dim, img_value.dtype, img_value.device)
+
+            joint_query[:, :seq_txt] = txt_query
+            joint_query[:, seq_txt:] = img_query
+            joint_key[:, :seq_txt] = txt_key
+            joint_key[:, seq_txt:] = img_key
+            joint_value[:, :seq_txt] = txt_value
+            joint_value[:, seq_txt:] = img_value
 
         joint_hidden_states = dispatch_attention_fn(
             joint_query,
@@ -556,16 +840,22 @@ class QwenDoubleStreamAttnProcessor2_0:
             parallel_config=self._parallel_config,
         )
 
-        # Reshape back
-        joint_hidden_states = joint_hidden_states.flatten(2, 3)
-        joint_hidden_states = joint_hidden_states.to(joint_query.dtype)
+        # Reshape back: [B, S, H, D] -> [B, S, H*D]
+        # Use reshape instead of flatten to avoid allocation when contiguous
+        B_out, S_out, H_out, D_out = joint_hidden_states.shape
+        joint_hidden_states = joint_hidden_states.reshape(B_out, S_out, H_out * D_out)
+        if joint_hidden_states.dtype != joint_query.dtype:
+            joint_hidden_states = joint_hidden_states.to(joint_query.dtype)
 
         # Split attention outputs back
         txt_attn_output = joint_hidden_states[:, :seq_txt, :]  # Text part
         img_attn_output = joint_hidden_states[:, seq_txt:, :]  # Image part
 
-        # Apply output projections
-        img_attn_output = attn.to_out[0](img_attn_output.contiguous())
+        # Apply output projections (skipped when caller will fuse them)
+        if skip_output_proj:
+            return img_attn_output, txt_attn_output
+
+        img_attn_output = attn.to_out[0](img_attn_output)
         if len(attn.to_out) > 1:
             img_attn_output = attn.to_out[1](img_attn_output)  # dropout
 
@@ -584,12 +874,17 @@ class QwenImageTransformerBlock(nn.Module):
         qk_norm: str = "rms_norm",
         eps: float = 1e-6,
         zero_cond_t: bool = False,
+        use_custom_kernels: bool = False,
     ):
         super().__init__()
 
         self.dim = dim
         self.num_attention_heads = num_attention_heads
         self.attention_head_dim = attention_head_dim
+
+        # Flag is checked at runtime against kernel availability in QWEN-specific kernel_ops.
+        # Wiring to actual kernels is added separately so we keep this minimal and backwards compatible.
+        self._use_custom_kernels_flag = use_custom_kernels
 
         # Image processing modules
         self.img_mod = nn.Sequential(
@@ -610,6 +905,9 @@ class QwenImageTransformerBlock(nn.Module):
             qk_norm=qk_norm,
             eps=eps,
         )
+        # Mark this attention module so the processor knows whether it is
+        # allowed to use QWEN-specific fused CUDA kernels.
+        self.attn._qwen_use_custom_kernels = use_custom_kernels
         self.img_norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=eps)
         self.img_mlp = FeedForward(dim=dim, dim_out=dim, activation_fn="gelu-approximate")
 
@@ -624,6 +922,46 @@ class QwenImageTransformerBlock(nn.Module):
         self.txt_mlp = FeedForward(dim=dim, dim_out=dim, activation_fn="gelu-approximate")
 
         self.zero_cond_t = zero_cond_t
+        # Pre-compute kernel availability flags once, updated when use_custom_kernels changes.
+        self._update_kernel_availability_cache()
+
+    def _update_kernel_availability_cache(self) -> None:
+        """Pre-compute kernel availability flags to avoid per-forward boolean evaluation."""
+        self._cached_use_fused_lnm = (
+            self._use_custom_kernels_flag
+            and _qwen_layernorm_modulate_kernel is not None
+            and _QWEN_KERNELS_AVAILABLE
+        )
+        self._cached_use_fused_lnm_txt = self._cached_use_fused_lnm
+        # DISABLED: Triton autotuned tl.dot achieves ~70-85% of cuBLAS for
+        # these shapes (M=4352, K=3072/12288, N=3072).  The gate+residual
+        # epilogue fusion saves ~2ms total, but the GEMM regression costs
+        # ~25-40ms → net ~3% slower.  Re-enable if/when a CUTLASS epilogue
+        # visitor is used so cuBLAS-class GEMM performance is preserved.
+        self._cached_use_fused_gemm_gate = False
+        # Fused LayerNorm + Modulate + MLP up-projection.
+        # DISABLED: the hand-written WMMA GEMM cannot compete with cuBLAS for
+        # the MLP up-projection (4352×12288×3072).  The HBM savings from
+        # eliminating the [B,S,D] intermediate (~26 MB write+read ≈ 16 µs on
+        # H100) are dwarfed by the GEMM slowdown (10-50×).  Re-enable only
+        # after switching to a CUTLASS-based prologue fusion or Triton wrapper
+        # that delegates the matmul to cuBLAS/cuTLASS.
+        self._cached_use_fused_lnm_gemm_up = False
+
+    @property
+    def use_custom_kernels(self) -> bool:
+        """
+        Whether this block should use custom CUDA kernels (when available).
+
+        The actual kernel wiring lives in QWEN-specific kernel_ops; this flag only
+        controls whether the fast path is allowed to be taken.
+        """
+        return self._use_custom_kernels_flag
+
+    @use_custom_kernels.setter
+    def use_custom_kernels(self, value: bool) -> None:
+        self._use_custom_kernels_flag = bool(value)
+        self._update_kernel_availability_cache()
 
     def _modulate(self, x, mod_params, index=None):
         """Apply modulation to input tensor"""
@@ -667,28 +1005,68 @@ class QwenImageTransformerBlock(nn.Module):
         encoder_hidden_states: torch.Tensor,
         encoder_hidden_states_mask: torch.Tensor,
         temb: torch.Tensor,
-        image_rotary_emb: tuple[torch.Tensor, torch.Tensor] | None = None,
-        joint_attention_kwargs: dict[str, Any] | None = None,
-        modulate_index: list[int] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        # Get modulation parameters for both streams
-        img_mod_params = self.img_mod(temb)  # [B, 6*dim]
+        image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        joint_attention_kwargs: Optional[Dict[str, Any]] = None,
+        modulate_index: Optional[List[int]] = None,
+        precomputed_img_mod: Optional[torch.Tensor] = None,
+        precomputed_txt_mod: Optional[torch.Tensor] = None,
+        parallel_stream=None,
+        parallel_event_default=None,
+        parallel_event_side=None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Get modulation parameters for both streams.
+        # If pre-computed (from batched GEMM in Phase 5), skip per-block computation.
+        if _QWEN_NVTX_ENABLED:
+            _nvtx_range_push("modulation")
+        if precomputed_img_mod is not None:
+            img_mod_params = precomputed_img_mod  # [B, 6*dim]
+        else:
+            img_mod_params = self.img_mod(temb)  # [B, 6*dim]
 
-        if self.zero_cond_t:
-            temb = torch.chunk(temb, 2, dim=0)[0]
-        txt_mod_params = self.txt_mod(temb)  # [B, 6*dim]
+        if precomputed_txt_mod is not None:
+            txt_mod_params = precomputed_txt_mod  # [B, 6*dim]
+        else:
+            if self.zero_cond_t:
+                temb = torch.chunk(temb, 2, dim=0)[0]
+            txt_mod_params = self.txt_mod(temb)  # [B, 6*dim]
 
         # Split modulation parameters for norm1 and norm2
         img_mod1, img_mod2 = img_mod_params.chunk(2, dim=-1)  # Each [B, 3*dim]
         txt_mod1, txt_mod2 = txt_mod_params.chunk(2, dim=-1)  # Each [B, 3*dim]
+        if _QWEN_NVTX_ENABLED:
+            _nvtx_range_pop()
 
+        # Use cached kernel availability flags from the model-level pre-computation.
+        # This avoids re-evaluating 3 boolean conditions per block per step
+        # (was 540 evaluations per image, now 0).
+        _use_fused_lnm = (
+            self._cached_use_fused_lnm
+            and modulate_index is None  # fused kernel only handles non-indexed path
+        )
+        _use_fused_lnm_txt = self._cached_use_fused_lnm_txt
         # Process image stream - norm1 + modulation
-        img_normed = self.img_norm1(hidden_states)
-        img_modulated, img_gate1 = self._modulate(img_normed, img_mod1, modulate_index)
+        if _QWEN_NVTX_ENABLED:
+            _nvtx_range_push("norm1_mod")
+        if _use_fused_lnm:
+            img_shift1, img_scale1, img_gate1_raw = img_mod1.chunk(3, dim=-1)
+            img_modulated = _qwen_layernorm_modulate_kernel(
+                hidden_states, img_scale1, img_shift1, eps=self.img_norm1.eps
+            )
+            img_gate1 = img_gate1_raw.unsqueeze(1)
+        else:
+            img_normed = self.img_norm1(hidden_states)
+            img_modulated, img_gate1 = self._modulate(img_normed, img_mod1, modulate_index)
 
         # Process text stream - norm1 + modulation
-        txt_normed = self.txt_norm1(encoder_hidden_states)
-        txt_modulated, txt_gate1 = self._modulate(txt_normed, txt_mod1)
+        if _use_fused_lnm_txt:
+            txt_shift1, txt_scale1, txt_gate1_raw = txt_mod1.chunk(3, dim=-1)
+            txt_modulated = _qwen_layernorm_modulate_kernel(
+                encoder_hidden_states, txt_scale1, txt_shift1, eps=self.txt_norm1.eps
+            )
+            txt_gate1 = txt_gate1_raw.unsqueeze(1)
+        else:
+            txt_normed = self.txt_norm1(encoder_hidden_states)
+            txt_modulated, txt_gate1 = self._modulate(txt_normed, txt_mod1)
 
         # Use QwenAttnProcessor2_0 for joint attention computation
         # This directly implements the DoubleStreamLayerMegatron logic:
@@ -696,7 +1074,13 @@ class QwenImageTransformerBlock(nn.Module):
         # 2. Applies QK normalization and RoPE
         # 3. Concatenates and runs joint attention
         # 4. Splits results back to separate streams
+        if _QWEN_NVTX_ENABLED:
+            _nvtx_range_pop()  # norm1_mod
+            _nvtx_range_push("attention")
         joint_attention_kwargs = joint_attention_kwargs or {}
+        _use_fused_gemm_gate = self._cached_use_fused_gemm_gate and modulate_index is None
+        if _use_fused_gemm_gate:
+            joint_attention_kwargs = {**joint_attention_kwargs, "skip_output_proj": True}
         attn_output = self.attn(
             hidden_states=img_modulated,  # Image stream (will be processed as "sample")
             encoder_hidden_states=txt_modulated,  # Text stream (will be processed as "context")
@@ -708,21 +1092,175 @@ class QwenImageTransformerBlock(nn.Module):
         # QwenAttnProcessor2_0 returns (img_output, txt_output) when encoder_hidden_states is provided
         img_attn_output, txt_attn_output = attn_output
 
-        # Apply attention gates and add residual (like in Megatron)
-        hidden_states = hidden_states + img_gate1 * img_attn_output
-        encoder_hidden_states = encoder_hidden_states + txt_gate1 * txt_attn_output
+        if _QWEN_NVTX_ENABLED:
+            _nvtx_range_pop()  # attention
+            _nvtx_range_push("attn_gate_res")
+        if _use_fused_gemm_gate:
+            # Fused path: GEMM (output projection) + gate + residual in a single Triton kernel.
+            # Eliminates global-memory round-trip between the Linear and addcmul.
+            img_out_linear = self.attn.to_out[0]
+            hidden_states = _fused_gemm_gate_residual(
+                img_attn_output, img_out_linear.weight, img_out_linear.bias,
+                img_gate1, hidden_states,
+            )
+            txt_out_linear = self.attn.to_add_out
+            encoder_hidden_states = _fused_gemm_gate_residual(
+                txt_attn_output, txt_out_linear.weight, txt_out_linear.bias,
+                txt_gate1, encoder_hidden_states,
+            )
+        else:
+            # Standard path: output already projected by the processor.
+            # torch.addcmul is faster than both the custom kernel and separate mul+add
+            hidden_states = torch.addcmul(hidden_states, img_gate1, img_attn_output)
+            encoder_hidden_states = torch.addcmul(encoder_hidden_states, txt_gate1, txt_attn_output)
 
-        # Process image stream - norm2 + MLP
-        img_normed2 = self.img_norm2(hidden_states)
-        img_modulated2, img_gate2 = self._modulate(img_normed2, img_mod2, modulate_index)
-        img_mlp_output = self.img_mlp(img_modulated2)
-        hidden_states = hidden_states + img_gate2 * img_mlp_output
+        # --- MLP Phase: parallel streams overlap img and txt MLP ---
+        _use_parallel_mlp = parallel_stream is not None
+        if _use_parallel_mlp:
+            parallel_event_default.record()
+            parallel_stream.wait_event(parallel_event_default)
+
+        # Process image stream - norm2 + MLP (always on default stream)
+        if _QWEN_NVTX_ENABLED:
+            _nvtx_range_pop()  # attn_gate_res
+            _nvtx_range_push("img_norm2_mlp")
+        _use_fused_lnm_gemm = (
+            self._cached_use_fused_lnm_gemm_up
+            and modulate_index is None
+        )
+
+        if _use_fused_lnm_gemm:
+            # === Fused path: LN + Modulate + MLP up-projection in one CUDA kernel ===
+            img_shift2, img_scale2, img_gate2_raw = img_mod2.chunk(3, dim=-1)
+            img_gate2 = img_gate2_raw.unsqueeze(1)
+            # Single kernel: LayerNorm(hidden_states) * (1+scale) + shift → Linear(D→4D)
+            img_mlp_intermediate = _qwen_lnm_gemm_up_kernel(
+                hidden_states, img_scale2, img_shift2,
+                self.img_mlp.net[0].proj.weight, self.img_mlp.net[0].proj.bias,
+                eps=self.img_norm2.eps,
+            )
+            # GELU activation (only the activation, linear was fused above)
+            img_mlp_intermediate = F.gelu(img_mlp_intermediate, approximate="tanh")
+            # Down-projection + gate + residual
+            if _use_fused_gemm_gate:
+                img_down_proj = self.img_mlp.net[-1]
+                hidden_states = _fused_gemm_gate_residual(
+                    img_mlp_intermediate, img_down_proj.weight, img_down_proj.bias,
+                    img_gate2, hidden_states,
+                )
+            else:
+                img_down_out = self.img_mlp.net[-1](img_mlp_intermediate)
+                hidden_states = torch.addcmul(hidden_states, img_gate2, img_down_out)
+        elif _use_fused_lnm:
+            img_shift2, img_scale2, img_gate2_raw = img_mod2.chunk(3, dim=-1)
+            img_modulated2 = _qwen_layernorm_modulate_kernel(
+                hidden_states, img_scale2, img_shift2, eps=self.img_norm2.eps
+            )
+            img_gate2 = img_gate2_raw.unsqueeze(1)
+
+            if _use_fused_gemm_gate:
+                img_mlp_intermediate = img_modulated2
+                for layer in self.img_mlp.net[:-1]:
+                    img_mlp_intermediate = layer(img_mlp_intermediate)
+                img_down_proj = self.img_mlp.net[-1]
+                hidden_states = _fused_gemm_gate_residual(
+                    img_mlp_intermediate, img_down_proj.weight, img_down_proj.bias,
+                    img_gate2, hidden_states,
+                )
+            else:
+                img_mlp_output = self.img_mlp(img_modulated2)
+                hidden_states = torch.addcmul(hidden_states, img_gate2, img_mlp_output)
+        else:
+            img_normed2 = self.img_norm2(hidden_states)
+            img_modulated2, img_gate2 = self._modulate(img_normed2, img_mod2, modulate_index)
+
+            if _use_fused_gemm_gate:
+                img_mlp_intermediate = img_modulated2
+                for layer in self.img_mlp.net[:-1]:
+                    img_mlp_intermediate = layer(img_mlp_intermediate)
+                img_down_proj = self.img_mlp.net[-1]
+                hidden_states = _fused_gemm_gate_residual(
+                    img_mlp_intermediate, img_down_proj.weight, img_down_proj.bias,
+                    img_gate2, hidden_states,
+                )
+            else:
+                img_mlp_output = self.img_mlp(img_modulated2)
+                hidden_states = torch.addcmul(hidden_states, img_gate2, img_mlp_output)
 
         # Process text stream - norm2 + MLP
-        txt_normed2 = self.txt_norm2(encoder_hidden_states)
-        txt_modulated2, txt_gate2 = self._modulate(txt_normed2, txt_mod2)
-        txt_mlp_output = self.txt_mlp(txt_modulated2)
-        encoder_hidden_states = encoder_hidden_states + txt_gate2 * txt_mlp_output
+        # If parallel streams enabled, switch to side stream for txt MLP
+        if _use_parallel_mlp:
+            _parallel_ctx = torch.cuda.stream(parallel_stream)
+            _parallel_ctx.__enter__()
+        if _QWEN_NVTX_ENABLED:
+            _nvtx_range_pop()  # img_norm2_mlp
+            _nvtx_range_push("txt_norm2_mlp")
+        _use_fused_lnm_gemm_txt = (
+            self._cached_use_fused_lnm_gemm_up
+            and True  # text never uses modulate_index
+        )
+
+        if _use_fused_lnm_gemm_txt:
+            txt_shift2, txt_scale2, txt_gate2_raw = txt_mod2.chunk(3, dim=-1)
+            txt_gate2 = txt_gate2_raw.unsqueeze(1)
+            txt_mlp_intermediate = _qwen_lnm_gemm_up_kernel(
+                encoder_hidden_states, txt_scale2, txt_shift2,
+                self.txt_mlp.net[0].proj.weight, self.txt_mlp.net[0].proj.bias,
+                eps=self.txt_norm2.eps,
+            )
+            txt_mlp_intermediate = F.gelu(txt_mlp_intermediate, approximate="tanh")
+            if _use_fused_gemm_gate:
+                txt_down_proj = self.txt_mlp.net[-1]
+                encoder_hidden_states = _fused_gemm_gate_residual(
+                    txt_mlp_intermediate, txt_down_proj.weight, txt_down_proj.bias,
+                    txt_gate2, encoder_hidden_states,
+                )
+            else:
+                txt_down_out = self.txt_mlp.net[-1](txt_mlp_intermediate)
+                encoder_hidden_states = torch.addcmul(encoder_hidden_states, txt_gate2, txt_down_out)
+        elif _use_fused_lnm_txt:
+            txt_shift2, txt_scale2, txt_gate2_raw = txt_mod2.chunk(3, dim=-1)
+            txt_modulated2 = _qwen_layernorm_modulate_kernel(
+                encoder_hidden_states, txt_scale2, txt_shift2, eps=self.txt_norm2.eps
+            )
+            txt_gate2 = txt_gate2_raw.unsqueeze(1)
+
+            if _use_fused_gemm_gate:
+                txt_mlp_intermediate = txt_modulated2
+                for layer in self.txt_mlp.net[:-1]:
+                    txt_mlp_intermediate = layer(txt_mlp_intermediate)
+                txt_down_proj = self.txt_mlp.net[-1]
+                encoder_hidden_states = _fused_gemm_gate_residual(
+                    txt_mlp_intermediate, txt_down_proj.weight, txt_down_proj.bias,
+                    txt_gate2, encoder_hidden_states,
+                )
+            else:
+                txt_mlp_output = self.txt_mlp(txt_modulated2)
+                encoder_hidden_states = torch.addcmul(encoder_hidden_states, txt_gate2, txt_mlp_output)
+        else:
+            txt_normed2 = self.txt_norm2(encoder_hidden_states)
+            txt_modulated2, txt_gate2 = self._modulate(txt_normed2, txt_mod2)
+
+            if _use_fused_gemm_gate:
+                txt_mlp_intermediate = txt_modulated2
+                for layer in self.txt_mlp.net[:-1]:
+                    txt_mlp_intermediate = layer(txt_mlp_intermediate)
+                txt_down_proj = self.txt_mlp.net[-1]
+                encoder_hidden_states = _fused_gemm_gate_residual(
+                    txt_mlp_intermediate, txt_down_proj.weight, txt_down_proj.bias,
+                    txt_gate2, encoder_hidden_states,
+                )
+            else:
+                txt_mlp_output = self.txt_mlp(txt_modulated2)
+                encoder_hidden_states = torch.addcmul(encoder_hidden_states, txt_gate2, txt_mlp_output)
+
+        if _QWEN_NVTX_ENABLED:
+            _nvtx_range_pop()  # txt_norm2_mlp
+
+        if _use_parallel_mlp:
+            parallel_event_side.record()
+            _parallel_ctx.__exit__(None, None, None)
+            torch.cuda.current_stream().wait_event(parallel_event_side)
 
         # Clip to prevent overflow for fp16
         if encoder_hidden_states.dtype == torch.float16:
@@ -796,6 +1334,7 @@ class QwenImageTransformer2DModel(
         zero_cond_t: bool = False,
         use_additional_t_cond: bool = False,
         use_layer3d_rope: bool = False,
+        use_custom_kernels: bool = False,
     ):
         super().__init__()
         self.out_channels = out_channels or in_channels
@@ -822,6 +1361,7 @@ class QwenImageTransformer2DModel(
                     num_attention_heads=num_attention_heads,
                     attention_head_dim=attention_head_dim,
                     zero_cond_t=zero_cond_t,
+                    use_custom_kernels=use_custom_kernels,
                 )
                 for _ in range(num_layers)
             ]
@@ -832,6 +1372,101 @@ class QwenImageTransformer2DModel(
 
         self.gradient_checkpointing = False
         self.zero_cond_t = zero_cond_t
+
+        # Cached stacked modulation weights for batched pre-computation (Phase 5).
+        # Populated lazily on first use via _ensure_batched_mod_weights().
+        self._batched_img_mod_weight: Optional[torch.Tensor] = None
+        self._batched_img_mod_bias: Optional[torch.Tensor] = None
+        self._batched_txt_mod_weight: Optional[torch.Tensor] = None
+        self._batched_txt_mod_bias: Optional[torch.Tensor] = None
+
+        # Parallel CUDA streams for overlapping image/text MLP phases.
+        # Lazily initialized via _ensure_parallel_streams().
+        self._parallel_stream = None
+        self._parallel_event_default = None
+        self._parallel_event_side = None
+        self._use_parallel_streams = False
+
+    def _ensure_batched_mod_weights(self) -> None:
+        """Stack all blocks' modulation Linear weights for batched GEMM.
+
+        Called lazily on first use. The stacked tensors are views/copies of
+        the original parameters, so they stay on the correct device. They
+        are invalidated if the number of blocks changes (unlikely in inference).
+        """
+        if self._batched_img_mod_weight is not None:
+            return
+
+        blocks = self.transformer_blocks
+        n = len(blocks)
+        # img_mod is nn.Sequential(SiLU, Linear(D, 6*D))
+        # The Linear is at index [1]
+        self._batched_img_mod_weight = torch.stack(
+            [blocks[i].img_mod[1].weight for i in range(n)]
+        )  # [N, 6*D, D]
+        self._batched_img_mod_bias = torch.stack(
+            [blocks[i].img_mod[1].bias for i in range(n)]
+        )  # [N, 6*D]
+        self._batched_txt_mod_weight = torch.stack(
+            [blocks[i].txt_mod[1].weight for i in range(n)]
+        )  # [N, 6*D, D]
+        self._batched_txt_mod_bias = torch.stack(
+            [blocks[i].txt_mod[1].bias for i in range(n)]
+        )  # [N, 6*D]
+
+    def _precompute_all_modulations(
+        self, temb: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Batch all 60 blocks' modulation projections into 2 batched GEMMs.
+
+        Instead of 120 separate small GEMMs (60 img + 60 txt, each [B, D] x [6*D, D]),
+        this computes all modulations in 2 operations:
+          SiLU(temb) @ stacked_weights^T + stacked_biases
+
+        Args:
+            temb: [B, D] timestep embedding
+
+        Returns:
+            (all_img_mods, all_txt_mods): each [B, N, 6*D] where N = num_blocks
+        """
+        self._ensure_batched_mod_weights()
+
+        silu_temb = F.silu(temb)  # [B, D]
+
+        # Batched GEMM for all image modulations:
+        # einsum('bd,nod->bno', silu_temb, weights) computes silu_temb @ weight^T for each block
+        all_img_mods = (
+            torch.einsum('bd,nod->bno', silu_temb, self._batched_img_mod_weight)
+            + self._batched_img_mod_bias.unsqueeze(0)
+        )  # [B, N, 6*D]
+
+        # For txt_mod, handle zero_cond_t: use chunked temb if applicable
+        if self.zero_cond_t:
+            txt_silu_temb = F.silu(torch.chunk(temb, 2, dim=0)[0])
+        else:
+            txt_silu_temb = silu_temb
+
+        all_txt_mods = (
+            torch.einsum('bd,nod->bno', txt_silu_temb, self._batched_txt_mod_weight)
+            + self._batched_txt_mod_bias.unsqueeze(0)
+        )  # [B_txt, N, 6*D]
+
+        return all_img_mods, all_txt_mods
+
+    def _ensure_parallel_streams(self) -> None:
+        """Lazily create CUDA stream and events for parallel MLP execution."""
+        if self._parallel_stream is None:
+            self._parallel_stream = torch.cuda.Stream()
+            self._parallel_event_default = torch.cuda.Event(enable_timing=False)
+            self._parallel_event_side = torch.cuda.Event(enable_timing=False)
+
+    def enable_parallel_streams(self) -> None:
+        """Enable parallel CUDA streams for overlapping image/text MLP in each block."""
+        self._use_parallel_streams = True
+
+    def disable_parallel_streams(self) -> None:
+        """Disable parallel CUDA streams for image/text MLP overlap."""
+        self._use_parallel_streams = False
 
     @apply_lora_scale("attention_kwargs")
     def forward(
@@ -929,14 +1564,91 @@ class QwenImageTransformer2DModel(
         # Construct joint attention mask once to avoid reconstructing in every block
         # This eliminates 60 GPU syncs during training while maintaining torch.compile compatibility
         block_attention_kwargs = attention_kwargs.copy() if attention_kwargs is not None else {}
+
+        # Build rope_grid_info for fused CUDA RoPE kernel (image tokens only).
+        # Only for non-Layer3D single-resolution images with custom kernels enabled.
+        # Cache the check result on the model to avoid re-evaluating every forward pass.
+        _any_block_uses_kernels = getattr(self, "_cached_any_block_uses_kernels", None)
+        if _any_block_uses_kernels is None:
+            _any_block_uses_kernels = (
+                len(self.transformer_blocks) > 0
+                and getattr(self.transformer_blocks[0], "_use_custom_kernels_flag", False)
+            )
+            self._cached_any_block_uses_kernels = _any_block_uses_kernels
+        if (
+            _any_block_uses_kernels
+            and _qwen_rope_3d_fused_kernel is not None
+            and _QWEN_KERNELS_AVAILABLE
+            and img_shapes is not None
+            and not isinstance(self.pos_embed, QwenEmbedLayer3DRope)
+        ):
+            _fhw = img_shapes[0] if isinstance(img_shapes[0], (list, tuple)) else img_shapes
+            if isinstance(_fhw, (list, tuple)) and len(_fhw) == 3:
+                _frame, _height, _width = _fhw
+            elif isinstance(_fhw, (list, tuple)) and len(_fhw) >= 1 and isinstance(_fhw[0], (list, tuple)):
+                _frame, _height, _width = _fhw[0]
+            else:
+                _frame, _height, _width = None, None, None
+
+            if _frame is not None:
+                block_attention_kwargs["rope_grid_info"] = {
+                    "grid_frame": int(_frame),
+                    "grid_height": int(_height),
+                    "grid_width": int(_width),
+                    "theta": float(self.pos_embed.theta),
+                    "axes_dim": tuple(self.pos_embed.axes_dim),
+                    "height_offset": int(_height) - int(_height) // 2,
+                    "width_offset": int(_width) - int(_width) // 2,
+                }
+
         if encoder_hidden_states_mask is not None:
             # Build joint mask: [text_mask, all_ones_for_image]
+            # Cache the image_mask tensor to avoid torch.ones() allocation every step.
             batch_size, image_seq_len = hidden_states.shape[:2]
-            image_mask = torch.ones((batch_size, image_seq_len), dtype=torch.bool, device=hidden_states.device)
+            _cached = getattr(self, "_cached_image_mask", None)
+            if (
+                _cached is not None
+                and _cached.shape == (batch_size, image_seq_len)
+                and _cached.device == hidden_states.device
+            ):
+                image_mask = _cached
+            else:
+                image_mask = torch.ones(
+                    (batch_size, image_seq_len), dtype=torch.bool, device=hidden_states.device
+                )
+                self._cached_image_mask = image_mask
             joint_attention_mask = torch.cat([encoder_hidden_states_mask, image_mask], dim=1)
             block_attention_kwargs["attention_mask"] = joint_attention_mask
 
+        # Pre-compute all 60 blocks' modulation parameters in 2 batched GEMMs
+        # instead of 120 separate small GEMMs. This reduces Python dispatch overhead
+        # and may improve GPU utilization for the small [B, D] x [6*D, D] shapes.
+        # Skip when gradient checkpointing is active (it recomputes forward anyway).
+        _use_batched_mods = (
+            not (torch.is_grad_enabled() and self.gradient_checkpointing)
+            and not torch.compiler.is_compiling()  # Let torch.compile handle fusion
+            and not getattr(self, "_disable_batched_modulations", False)
+        )
+        if _use_batched_mods:
+            if _QWEN_NVTX_ENABLED:
+                _nvtx_range_push("batched_modulation")
+            all_img_mods, all_txt_mods = self._precompute_all_modulations(temb)
+            if _QWEN_NVTX_ENABLED:
+                _nvtx_range_pop()
+        else:
+            all_img_mods = all_txt_mods = None
+
+        _use_parallel = (
+            self._use_parallel_streams
+            and not torch.compiler.is_compiling()
+            and not (torch.is_grad_enabled() and self.gradient_checkpointing)
+        )
+        if _use_parallel:
+            self._ensure_parallel_streams()
+
         for index_block, block in enumerate(self.transformer_blocks):
+            if _QWEN_NVTX_ENABLED:
+                _nvtx_range_push(f"block_{index_block}")
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
                     block,
@@ -950,6 +1662,10 @@ class QwenImageTransformer2DModel(
                 )
 
             else:
+                # Extract pre-computed modulation for this block
+                _img_mod = all_img_mods[:, index_block, :] if all_img_mods is not None else None
+                _txt_mod = all_txt_mods[:, index_block, :] if all_txt_mods is not None else None
+
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -958,7 +1674,14 @@ class QwenImageTransformer2DModel(
                     image_rotary_emb=image_rotary_emb,
                     joint_attention_kwargs=block_attention_kwargs,
                     modulate_index=modulate_index,
+                    precomputed_img_mod=_img_mod,
+                    precomputed_txt_mod=_txt_mod,
+                    parallel_stream=self._parallel_stream if _use_parallel else None,
+                    parallel_event_default=self._parallel_event_default if _use_parallel else None,
+                    parallel_event_side=self._parallel_event_side if _use_parallel else None,
                 )
+            if _QWEN_NVTX_ENABLED:
+                _nvtx_range_pop()
 
             # controlnet residual
             if controlnet_block_samples is not None:

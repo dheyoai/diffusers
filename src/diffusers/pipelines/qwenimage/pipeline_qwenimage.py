@@ -13,11 +13,27 @@
 # limitations under the License.
 
 import inspect
-from typing import Any, Callable
+import os
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
 import torch
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer
+
+# NVTX profiling support for Nsight Systems — enabled by QWEN_NVTX=1
+_QWEN_NVTX_ENABLED = os.environ.get("QWEN_NVTX", "0") == "1"
+if _QWEN_NVTX_ENABLED:
+    try:
+        import torch.cuda.nvtx as nvtx
+        _nvtx_range_push = nvtx.range_push
+        _nvtx_range_pop = nvtx.range_pop
+    except (ImportError, AttributeError):
+        _QWEN_NVTX_ENABLED = False
+        _nvtx_range_push = lambda msg: None  # noqa: E731
+        _nvtx_range_pop = lambda: None  # noqa: E731
+else:
+    _nvtx_range_push = lambda msg: None  # noqa: E731
+    _nvtx_range_pop = lambda: None  # noqa: E731
 
 from ...image_processor import VaeImageProcessor
 from ...loaders import QwenImageLoraLoaderMixin
@@ -26,6 +42,7 @@ from ...schedulers import FlowMatchEulerDiscreteScheduler
 from ...utils import deprecate, is_torch_xla_available, logging, replace_example_docstring
 from ...utils.torch_utils import randn_tensor
 from ..pipeline_utils import DiffusionPipeline
+from .cuda_graph_runner import CUDAGraphRunner, is_cuda_graphs_available
 from .pipeline_output import QwenImagePipelineOutput
 
 
@@ -54,6 +71,26 @@ EXAMPLE_DOC_STRING = """
         >>> image.save("qwenimage.png")
         ```
 """
+
+
+def _flow_match_euler_step(
+    latents: torch.Tensor,
+    noise_pred: torch.Tensor,
+    dt: torch.Tensor,
+) -> torch.Tensor:
+    """Inlined FlowMatchEulerDiscreteScheduler step for fusion into compiled graphs.
+
+    This is mathematically identical to FlowMatchEulerDiscreteScheduler.step()
+    for the non-stochastic, non-per-token path:
+        prev_sample = sample.float() + dt * model_output
+        prev_sample = prev_sample.to(model_output.dtype)
+
+    By pre-computing dt = sigmas[i+1] - sigmas[i] outside the loop and inlining
+    this arithmetic, the scheduler step becomes a pure tensor operation that
+    torch.compile / Inductor can fuse with the preceding transformer output.
+    """
+    prev_sample = latents.to(torch.float32) + dt * noise_pred
+    return prev_sample.to(noise_pred.dtype)
 
 
 def calculate_shift(
@@ -176,6 +213,62 @@ class QwenImagePipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         self.prompt_template_encode = "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
         self.prompt_template_encode_start_idx = 34
         self.default_sample_size = 128
+
+        # CUDA graph runner state (lazily initialized)
+        self._cuda_graph_runner: Optional[CUDAGraphRunner] = None
+        self._use_cuda_graphs = False
+
+    def enable_cuda_graphs(self):
+        """Enable CUDA graph capture/replay for the denoising loop.
+
+        The first denoising step will capture the transformer forward pass
+        as a CUDA graph. Steps 2-N replay the graph, eliminating ~18,900
+        kernel launches per inference.
+
+        Requirements:
+          - Static tensor shapes (same resolution across calls)
+          - No callback_on_step_end during CUDA graph replay
+          - No classifier-free guidance (do_true_cfg=False)
+        """
+        if not is_cuda_graphs_available():
+            logger.warning("CUDA graphs not available on this hardware")
+            return
+        self._use_cuda_graphs = True
+        # Parallel streams are incompatible with CUDA graph capture
+        if getattr(self.transformer, '_use_parallel_streams', False):
+            self.transformer.disable_parallel_streams()
+            logger.info("Parallel streams auto-disabled (incompatible with CUDA graphs)")
+        logger.info("CUDA graphs enabled for denoising loop")
+
+    def disable_cuda_graphs(self):
+        """Disable CUDA graph capture/replay."""
+        self._use_cuda_graphs = False
+        if self._cuda_graph_runner is not None:
+            self._cuda_graph_runner.reset()
+            self._cuda_graph_runner = None
+
+    def invalidate_cuda_graph(self):
+        """Invalidate captured CUDA graph, forcing re-capture on next pipe() call.
+
+        Call this when the model's configuration changes (e.g., different
+        attention backend, custom kernels enabled/disabled) so the graph
+        is re-captured with the new configuration.
+        """
+        if self._cuda_graph_runner is not None:
+            self._cuda_graph_runner.reset()
+            self._cuda_graph_runner = None
+
+    def enable_parallel_streams(self):
+        """Enable parallel CUDA streams for overlapping image/text MLP in each block.
+
+        This overlaps the image and text MLP phases on separate CUDA streams,
+        reducing per-block MLP time from sequential to the longer of the two.
+        """
+        self.transformer.enable_parallel_streams()
+
+    def disable_parallel_streams(self):
+        """Disable parallel CUDA streams."""
+        self.transformer.disable_parallel_streams()
 
     def _extract_masked_hidden(self, hidden_states: torch.Tensor, mask: torch.Tensor):
         bool_mask = mask.bool()
@@ -668,26 +761,105 @@ class QwenImagePipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
             self._attention_kwargs = {}
 
         # 6. Denoising loop
+        # CUDA graphs: capture on first step, replay on subsequent steps.
+        # Incompatible with: CFG (do_true_cfg), callbacks, interrupt.
+        _can_use_cuda_graphs = (
+            self._use_cuda_graphs
+            and not do_true_cfg
+            and callback_on_step_end is None
+            and is_cuda_graphs_available()
+        )
+
+        if _can_use_cuda_graphs:
+            # Reuse existing runner if captured and shapes match.
+            # This avoids re-capturing (2 warmup + graph creation = 3 extra
+            # forward passes) on every pipe() call.
+            if (
+                self._cuda_graph_runner is not None
+                and self._cuda_graph_runner.shapes_match(latents, prompt_embeds)
+            ):
+                _cuda_graph_reuse = True
+                logger.debug("CUDA graph: reusing captured graph (shapes match)")
+            else:
+                # First time, or shapes changed — need fresh capture
+                if self._cuda_graph_runner is not None:
+                    self._cuda_graph_runner.reset()
+                    logger.debug("CUDA graph: shapes changed, re-capturing")
+                else:
+                    logger.debug("CUDA graph: first capture")
+                self._cuda_graph_runner = CUDAGraphRunner(self.transformer)
+                _cuda_graph_reuse = False
+        else:
+            _cuda_graph_reuse = False
+
         self.scheduler.set_begin_index(0)
+
+        # Pre-compute per-step dt values for inlined scheduler step.
+        # For FlowMatchEulerDiscreteScheduler: dt[i] = sigmas[i+1] - sigmas[i].
+        # This moves all Python-side scheduler indexing out of the loop so the
+        # step becomes a pure tensor op that torch.compile can fuse.
+        _use_fused_scheduler = (
+            isinstance(self.scheduler, FlowMatchEulerDiscreteScheduler)
+            and not getattr(self.scheduler.config, "stochastic_sampling", False)
+        )
+        if _use_fused_scheduler:
+            _scheduler_sigmas = self.scheduler.sigmas.to(device=device, dtype=torch.float32)
+            _dt_values = _scheduler_sigmas[1:] - _scheduler_sigmas[:-1]
+
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     continue
 
+                if _QWEN_NVTX_ENABLED:
+                    _nvtx_range_push(f"denoise_step_{i}")
                 self._current_timestep = t
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
-                with self.transformer.cache_context("cond"):
-                    noise_pred = self.transformer(
-                        hidden_states=latents,
-                        timestep=timestep / 1000,
-                        guidance=guidance,
-                        encoder_hidden_states_mask=prompt_embeds_mask,
-                        encoder_hidden_states=prompt_embeds,
-                        img_shapes=img_shapes,
-                        attention_kwargs=self.attention_kwargs,
-                        return_dict=False,
-                    )[0]
+
+                if _can_use_cuda_graphs:
+                    # CUDA graph path:
+                    #   Step 0, first-time capture → runner.capture()
+                    #   Step 0, reuse (same shapes) → runner.replay_full()
+                    #   Steps 1+ → runner.replay()
+                    runner = self._cuda_graph_runner
+                    with self.transformer.cache_context("cond"):
+                        if i == 0:
+                            if _cuda_graph_reuse:
+                                # Reuse captured graph — update all buffers and replay
+                                noise_pred = runner.replay_full(
+                                    latents, timestep, prompt_embeds, prompt_embeds_mask,
+                                )
+                            else:
+                                # First-time capture (2 warmup + graph creation)
+                                noise_pred = runner.capture(
+                                    latents, timestep, prompt_embeds,
+                                    prompt_embeds_mask, guidance,
+                                    img_shapes, self.attention_kwargs,
+                                )
+                        elif runner.is_captured:
+                            # Steps 1+: just update latents + timestep and replay
+                            noise_pred = runner.replay(latents, timestep)
+                        else:
+                            # Capture failed — eager fallback
+                            noise_pred = runner._eager_forward(
+                                latents, timestep, prompt_embeds,
+                                prompt_embeds_mask, guidance,
+                                img_shapes, self.attention_kwargs,
+                            )
+                else:
+                    # Standard eager path
+                    with self.transformer.cache_context("cond"):
+                        noise_pred = self.transformer(
+                            hidden_states=latents,
+                            timestep=timestep / 1000,
+                            guidance=guidance,
+                            encoder_hidden_states_mask=prompt_embeds_mask,
+                            encoder_hidden_states=prompt_embeds,
+                            img_shapes=img_shapes,
+                            attention_kwargs=self.attention_kwargs,
+                            return_dict=False,
+                        )[0]
 
                 if do_true_cfg:
                     with self.transformer.cache_context("uncond"):
@@ -709,7 +881,18 @@ class QwenImagePipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
-                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if _use_fused_scheduler:
+                    # Inlined scheduler step — pure tensor math, fusable by torch.compile.
+                    # dt is pre-computed: dt[i] = sigmas[i+1] - sigmas[i]
+                    latents = _flow_match_euler_step(latents, noise_pred, _dt_values[i])
+                    # Keep the scheduler's internal step counter in sync so that
+                    # any post-loop code that inspects scheduler state sees the
+                    # correct index.
+                    if self.scheduler._step_index is None:
+                        self.scheduler._init_step_index(t)
+                    self.scheduler._step_index += 1
+                else:
+                    latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():
@@ -729,8 +912,15 @@ class QwenImagePipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
 
+                if _QWEN_NVTX_ENABLED:
+                    _nvtx_range_pop()
+
                 if XLA_AVAILABLE:
                     xm.mark_step()
+
+        # NOTE: CUDA graph runner is intentionally NOT reset here.
+        # It persists across pipe() calls for reuse. Call
+        # disable_cuda_graphs() to explicitly free it.
 
         self._current_timestep = None
         if output_type == "latent":
